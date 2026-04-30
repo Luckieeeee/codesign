@@ -35,8 +35,49 @@ import { Hocuspocus } from "@hocuspocus/server"
 import { createClient } from "@supabase/supabase-js"
 import { WebSocketServer } from "ws"
 
+import { closeAllCachedConnections } from "../lib/flow-core/document"
+import { mountAgentBridge } from "./agent-bridge/routes"
+
 const PORT = Number(process.env.COLLAB_WS_PORT ?? 1234)
 const HOST = process.env.COLLAB_WS_HOST ?? "0.0.0.0"
+
+// ---- Agent bridge mount-time gate -------------------------------------------
+// Loopback-only deployments may run open (no secret); any other bind host must
+// configure CODESIGN_AGENT_BRIDGE_SECRET (>= 16 chars) or the bridge mounts in
+// a disabled state that returns 503 BRIDGE_DISABLED for every agent route.
+
+const wsHost = process.env.COLLAB_WS_HOST ?? "127.0.0.1"
+const isLoopback =
+  wsHost === "127.0.0.1" || wsHost === "localhost" || wsHost === "::1"
+const bridgeSecret = process.env.CODESIGN_AGENT_BRIDGE_SECRET
+const bridgeSecretConfigured =
+  typeof bridgeSecret === "string" && bridgeSecret.length >= 16
+const bridgeDisabled = !isLoopback && !bridgeSecretConfigured
+const bridgeDisabledReason = bridgeDisabled
+  ? "Bridge requires CODESIGN_AGENT_BRIDGE_SECRET (>= 16 chars) when COLLAB_WS_HOST is non-loopback"
+  : undefined
+
+if (bridgeDisabled) {
+  console.warn("[agent-bridge] DISABLED:", bridgeDisabledReason)
+} else if (bridgeSecretConfigured) {
+  console.info("[agent-bridge] enabled with bearer auth")
+} else {
+  console.info(
+    "[agent-bridge] enabled (loopback-only, no secret required)",
+  )
+}
+
+const bridgeAllowedOrigins = (
+  process.env.CODESIGN_AGENT_BRIDGE_ORIGINS ?? ""
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+const bridgeIdempotencyMode: "memory" | "off" =
+  process.env.CODESIGN_AGENT_BRIDGE_IDEMPOTENCY_MODE === "off"
+    ? "off"
+    : "memory"
 
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -223,6 +264,21 @@ const readJson = (req: IncomingMessage): Promise<{ name?: string }> =>
   })
 
 const httpServer = createServer(async (req, res) => {
+  // Agent-bridge owns `/api/agent/*`. It writes its own CORS headers and full
+  // response, so we dispatch to it BEFORE setting our permissive CORS or
+  // touching the response in any way. tryHandle returns false for non-bridge
+  // URLs and we fall through to the existing routes.
+  try {
+    if (await bridge.tryHandle(req, res)) return
+  } catch (err) {
+    console.error(`[collab-server] agent-bridge tryHandle failed:`, err)
+    if (!res.headersSent) {
+      res.writeHead(500, { "Content-Type": "application/json" })
+      res.end(JSON.stringify({ error: "internal_error" }))
+    }
+    return
+  }
+
   // Permissive CORS — the Vercel-hosted frontend talks to us cross-origin.
   res.setHeader("Access-Control-Allow-Origin", "*")
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
@@ -316,6 +372,25 @@ httpServer.on("upgrade", (req, socket, head) => {
 })
 
 
+// ---- Agent bridge mount ------------------------------------------------------
+// Mounted AFTER httpServer + Hocuspocus exist (so the bridge can reuse them)
+// but BEFORE httpServer.listen, so the dispatcher closure used inside the
+// request handler above is initialised before any traffic can hit it.
+
+const bridge = mountAgentBridge({
+  httpServer,
+  hp: hocuspocus,
+  supabase,
+  context: {
+    disabled: bridgeDisabled,
+    disabledReason: bridgeDisabledReason,
+    secret: bridgeSecret,
+    allowedOrigins: bridgeAllowedOrigins,
+    idempotencyMode: bridgeIdempotencyMode,
+  },
+  getProject,
+})
+
 httpServer.listen(PORT, HOST, () => {
   console.log(`[collab-server] listening on ws://${HOST}:${PORT}`)
   console.log(`[collab-server] http on    http://${HOST}:${PORT}`)
@@ -327,6 +402,16 @@ const shutdown = async (signal: string) => {
     hocuspocus.flushPendingStores()
   } catch (err) {
     console.error(`[collab-server] flush failed:`, err)
+  }
+  try {
+    await bridge.close()
+  } catch (err) {
+    console.error(`[collab-server] bridge.close failed:`, err)
+  }
+  try {
+    await closeAllCachedConnections()
+  } catch (err) {
+    console.error(`[collab-server] closeAllCachedConnections failed:`, err)
   }
   httpServer.close(() => process.exit(0))
   // hard cap so we don't hang forever on stuck sockets
