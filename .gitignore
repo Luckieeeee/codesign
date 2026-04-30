@@ -1,0 +1,5 @@
+# Local-only environment files. Never commit secrets.
+# (Per-package gitignores in web/, etc. additionally cover their own .env files.)
+.env
+.env.*
+!.env.example

@@ -34,9 +34,8 @@ both:
 - Default local dev: `http://127.0.0.1:1234` (WS at `ws://127.0.0.1:1234`)
 - Production: whatever URL your operator gives you (HTTP scheme).
 
-There is **no `/api/` prefix** for bridge routes — that namespace is
-reserved for the browser-facing project CRUD that already exists. All
-bridge routes sit at the root.
+All bridge routes are mounted under the **`/api/agent/`** prefix on
+the collab server. Liveness lives at the root (`/health`).
 
 ---
 
@@ -52,13 +51,70 @@ bridge routes sit at the root.
 | `X-Agent-Owner-Email`  | optional                           | Email of the spawning human (shown in the hover-card subtext).       |
 | `Authorization`        | required iff bridge has a secret   | `Bearer <secret>`. Checked against `CODESIGN_AGENT_BRIDGE_SECRET`.   |
 | `X-Agent-Token`        | alternative to `Authorization`     | Same secret, different header. Pick one.                             |
-| `Idempotency-Key`      | required on `POST /edit` (default) | UUID or any opaque string. See **Idempotency** below.                |
+| `Idempotency-Key`      | required on `POST .../edit` (default) | UUID or any opaque string. See **Idempotency** below.                |
 | `Content-Type`         | required on POSTs                  | `application/json`.                                                  |
 
 If the operator has set `CODESIGN_AGENT_BRIDGE_SECRET`, you must
 present the secret as either `Authorization: Bearer <secret>` **or**
 `X-Agent-Token: <secret>`. If the secret is unset (loopback-only dev),
 no token is required.
+
+### Obtaining the secret
+
+The bearer token is **not** committed to the repo. Where to get it
+depends on whether you're hitting local dev or the deployed bridge:
+
+**Local dev (Bun + `bun run scripts/collab-server.ts`):**
+The collab server reads `CODESIGN_AGENT_BRIDGE_SECRET` from
+`web/.env.local` (gitignored). If the file or the var is missing and
+you're bound to `127.0.0.1`, the bridge runs in open mode — no token
+needed. To force secret-mode locally, add to `web/.env.local`:
+
+```bash
+# >= 16 chars; openssl rand -hex 32 is a good default
+CODESIGN_AGENT_BRIDGE_SECRET=$(openssl rand -hex 32)
+```
+
+Then load it in your shell:
+
+```bash
+export SECRET=$(grep '^CODESIGN_AGENT_BRIDGE_SECRET=' web/.env.local | cut -d= -f2-)
+```
+
+**Deployed bridge (Azure Container Apps):** The secret lives as a
+Container App secret named `codesign-agent-bridge-secret`. Anyone with
+`Reader` (or `Contributor`) on the resource group can fetch it:
+
+```bash
+# Show all secrets on the app (names + values; requires az login)
+az containerapp secret show \
+  --name codesign-collab \
+  --resource-group codesign-rg \
+  --secret-name codesign-agent-bridge-secret \
+  --query value -o tsv
+
+# …or in one step, export to your shell:
+export SECRET=$(az containerapp secret show \
+  --name codesign-collab --resource-group codesign-rg \
+  --secret-name codesign-agent-bridge-secret --query value -o tsv)
+```
+
+If you don't have Azure access, ask the operator (the human who
+deployed the collab server) to share it through a secret manager —
+**not** Slack, email, or Git. To rotate the secret (e.g. after a
+suspected leak), the operator runs:
+
+```bash
+NEW=$(openssl rand -hex 32)
+az containerapp secret set \
+  --name codesign-collab --resource-group codesign-rg \
+  --secrets codesign-agent-bridge-secret="$NEW"
+# A new revision rolls out automatically; old tokens stop working
+# as soon as the previous revision drains.
+```
+
+Once you have `$SECRET` exported, every example below works as
+written.
 
 ### Owner attribution (live presence)
 
@@ -79,7 +135,7 @@ your work is correctly attributed.
 
 ### Idempotency
 
-`POST /edit` requires `Idempotency-Key` by default
+`POST .../edit` requires `Idempotency-Key` by default
 (`CODESIGN_AGENT_BRIDGE_IDEMPOTENCY_MODE=required`). Behaviour:
 
 - **Same key + same body** → server returns the cached response with
@@ -97,58 +153,29 @@ your work is correctly attributed.
 All examples below assume `BASE_URL=http://127.0.0.1:1234` and
 `PROJECT_ID=my-project`.
 
-### `GET /healthz`
+### `GET /health`
 
-Liveness probe. No auth. Returns `200 ok`.
-
-```bash
-curl -sS "$BASE_URL/healthz"
-```
-
-```json
-{ "status": "ok" }
-```
-
-### `GET /.well-known/agent.json`
-
-Discovery. Lists supported ops, node/edge fields, auth modes,
-idempotency policy, version, and a `mcp` slot reserved for Phase 2.
+Liveness probe for the underlying collab process. **No auth, no
+`/api/agent/` prefix** — this lives at the root and is what Container
+Apps probes. Returns `200` with the plain-text body `collab-server ok`
+(content-type `text/plain`). Use this from monitoring; for "is the
+bridge wired up?", call any `/api/agent/...` route below and look at
+the status code (`503 BRIDGE_DISABLED` vs. `401 UNAUTHORIZED`).
 
 ```bash
-curl -sS "$BASE_URL/.well-known/agent.json" \
-  -H "X-Agent-Id: claude-code"
+curl -sS "$BASE_URL/health"
+# collab-server ok
 ```
 
-```json
-{
-  "protocol": "codesign-agent-bridge/1",
-  "endpoints": { "snapshot": "/projects/{id}/snapshot", "...": "..." },
-  "ops": ["addNode", "updateNode", "deleteNode", "addEdge", "updateEdge", "deleteEdge"],
-  "idempotency": { "mode": "required", "header": "Idempotency-Key" },
-  "auth": { "mode": "secret" | "open", "headers": ["Authorization", "X-Agent-Token"] },
-  "mcp": null
-}
-```
-
-### `GET /agent-docs`
-
-Returns this document (`AGENT_PROMPT.md`) as `text/markdown`. Useful
-when an agent harness wants to fetch the spec at runtime instead of
-having it baked into the system prompt.
-
-```bash
-curl -sS "$BASE_URL/agent-docs" \
-  -H "X-Agent-Id: claude-code"
-```
-
-### `GET /projects/{projectId}/snapshot`
+### `GET /api/agent/projects/{projectId}/summary`
 
 Cheap, LLM-friendly read. Strips `data` to a `label` preview so the
 response fits in any context window. Use this as your default first
 read.
 
 ```bash
-curl -sS "$BASE_URL/projects/$PROJECT_ID/snapshot" \
+curl -sS "$BASE_URL/api/agent/projects/$PROJECT_ID/summary" \
+  -H "Authorization: Bearer $SECRET" \
   -H "X-Agent-Id: claude-code"
 ```
 
@@ -169,16 +196,17 @@ curl -sS "$BASE_URL/projects/$PROJECT_ID/snapshot" \
 ```
 
 `revision` is your optimistic-locking token — pass it back as
-`baseRevision` on the next `POST /edit` to refuse stale writes.
+`baseRevision` on the next `POST .../edit` to refuse stale writes.
 
-### `GET /projects/{projectId}/state`
+### `GET /api/agent/projects/{projectId}/state`
 
-Same envelope as `/snapshot` but with the **full `data`** on every node
+Same envelope as `/summary` but with the **full `data`** on every node
 and edge. Use this when you need to read the actual contents of the
 canvas, not just labels.
 
 ```bash
-curl -sS "$BASE_URL/projects/$PROJECT_ID/state" \
+curl -sS "$BASE_URL/api/agent/projects/$PROJECT_ID/state" \
+  -H "Authorization: Bearer $SECRET" \
   -H "X-Agent-Id: claude-code"
 ```
 
@@ -201,14 +229,15 @@ curl -sS "$BASE_URL/projects/$PROJECT_ID/state" \
 }
 ```
 
-### `GET /projects/{projectId}/nodes/{nodeId}?depth=1`
+### `GET /api/agent/projects/{projectId}/nodes/{nodeId}/neighborhood?depth=1`
 
 Focal node + its k-hop neighbours and the edges that connect any pair
-in `{focal} ∪ neighbours`. `depth` defaults to 1 and is **capped at 5**.
-BFS from the focal node.
+in `{focal} ∪ neighbours`. `depth` defaults to `1`; non-numeric or
+negative values are coerced back to `1`. BFS from the focal node.
 
 ```bash
-curl -sS "$BASE_URL/projects/$PROJECT_ID/nodes/1?depth=2" \
+curl -sS "$BASE_URL/api/agent/projects/$PROJECT_ID/nodes/1/neighborhood?depth=2" \
+  -H "Authorization: Bearer $SECRET" \
   -H "X-Agent-Id: claude-code"
 ```
 
@@ -223,7 +252,9 @@ curl -sS "$BASE_URL/projects/$PROJECT_ID/nodes/1?depth=2" \
 }
 ```
 
-### `POST /projects/{projectId}/edit`
+A focal-node id that doesn't exist returns `404 NODE_NOT_FOUND`.
+
+### `POST /api/agent/projects/{projectId}/edit`
 
 The workhorse — every mutation flows through this one route. All ops in
 a single call run in **one Yjs transaction**: validate-then-commit, so
@@ -232,8 +263,9 @@ broadcast to other clients.
 
 ```bash
 KEY=$(uuidgen)
-curl -sS -X POST "$BASE_URL/projects/$PROJECT_ID/edit" \
+curl -sS -X POST "$BASE_URL/api/agent/projects/$PROJECT_ID/edit" \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $SECRET" \
   -H "X-Agent-Id: claude-code" \
   -H "X-Agent-Name: Claude Code" \
   -H "X-Agent-Run-Id: run-2026-04-30-abc" \
@@ -260,17 +292,19 @@ Response:
   "created":  { "nodes": ["n-checkout"], "edges": ["e-1-n-checkout-9f3a21"] },
   "updated":  { "nodes": [], "edges": [] },
   "deleted":  { "nodes": [], "edges": [] },
-  "cascadedEdges": [],
-  "snapshot": { "projectId": "my-project", "revision": "rev1_...", "...": "..." }
+  "cascadedEdges": []
 }
 ```
 
 `cascadedEdges` lists edge ids removed as a side-effect of `deleteNode`
-with `cascadeEdges: true`, so you can audit what disappeared.
+with `cascadeEdges: true` (the default), so you can audit what
+disappeared. To see the post-edit canvas, follow up with `GET
+.../summary` — the edit response intentionally does **not** embed a
+snapshot.
 
 ---
 
-## `POST /edit` — body shape
+## `POST .../edit` — body shape
 
 ```json
 {
@@ -343,16 +377,18 @@ Date().toISOString()`).
 
 ## Optimistic concurrency (`baseRevision`)
 
-The `revision` you got from your last `/snapshot`, `/state`, or
-`/nodes/...` read is a content-addressed token over the entire Yjs
+The `revision` you got from your last `/summary`, `/state`, or
+`/neighborhood` read is a content-addressed token over the entire Yjs
 state vector. It bumps on every doc change, including browser drags
 from human users.
 
-- Pass it as `baseRevision` on `POST /edit`.
+- Pass it as `baseRevision` on `POST .../edit`.
 - If the doc has moved on since you read it, the bridge throws
-  `409 STALE_REVISION` **with the latest snapshot embedded in the
-  response body** so you can replan in one round-trip — no second
-  `GET /snapshot` needed.
+  `409 STALE_REVISION` **with the latest snapshot embedded at
+  `error.details.snapshot`** so you can replan in one round-trip — no
+  second `GET .../summary` needed. The `details` object also includes
+  `baseRevision` (what you sent) and `currentRevision` (what the doc
+  is at now).
 - For one-off, read-only-by-construction edits (e.g. an unconditional
   `addNode` of a brand-new id), `baseRevision` is optional. For
   anything that updates or deletes existing entities, **always send
@@ -369,7 +405,7 @@ from human users.
 | 401    | `UNAUTHORIZED`                             | Bridge is configured with a secret and request omitted/wrong; or `X-Agent-Id` missing             |
 | 404    | `PROJECT_NOT_FOUND`                        | Supabase has no row for `projectId`                                                               |
 | 404    | `NODE_NOT_FOUND` / `EDGE_NOT_FOUND`        | `update*` / `delete*` against a missing id (after the stale check)                                |
-| 409    | `STALE_REVISION`                           | `baseRevision` mismatches; **latest snapshot embedded in body**                                   |
+| 409    | `STALE_REVISION`                           | `baseRevision` mismatches; latest snapshot at `error.details.snapshot`, plus `details.baseRevision` / `details.currentRevision`. |
 | 409    | `IDEMPOTENCY_KEY_REUSED_DIFFERENT_BODY`    | Same `(projectId, agentId, key)`, different body                                                  |
 | 409    | `EDGES_WOULD_BE_ORPHANED`                  | `deleteNode` with `cascadeEdges: false` and live edges still reference the node                   |
 | 409    | `EDGE_REFERENCES_MISSING_NODE`             | `addEdge` / `updateEdge` source/target id doesn't exist                                           |
@@ -381,7 +417,17 @@ from human users.
 Errors come back as:
 
 ```json
-{ "error": { "code": "STALE_REVISION", "message": "...", "snapshot": { ... } } }
+{
+  "error": {
+    "code": "STALE_REVISION",
+    "message": "...",
+    "details": {
+      "baseRevision": "rev1_oldhash",
+      "currentRevision": "rev1_newhash",
+      "snapshot": { "projectId": "...", "revision": "rev1_newhash", "...": "..." }
+    }
+  }
+}
 ```
 
 ---
@@ -417,17 +463,17 @@ itself.
 
 ## Recommended workflow
 
-1. **Read once.** `GET /snapshot` to see what's there and capture
-   `revision`. If you need full content, follow up with `GET /state` or
-   a focused `GET /nodes/{id}?depth=N`.
+1. **Read once.** `GET .../summary` to see what's there and capture
+   `revision`. If you need full content, follow up with `GET .../state`
+   or a focused `GET .../nodes/{id}/neighborhood?depth=N`.
 2. **Plan locally.** Compose your `EditOp[]` against the snapshot you
    just read.
 3. **Mint an `Idempotency-Key`** (a fresh UUID) for this logical
    change.
-4. **`POST /edit`** with `baseRevision` set to the revision you read.
-5. On `409 STALE_REVISION`, **replan from the snapshot embedded in the
-   response body** — don't blindly retry, and don't issue a fresh
-   `GET /snapshot` (it's already inline).
+4. **`POST .../edit`** with `baseRevision` set to the revision you read.
+5. On `409 STALE_REVISION`, **replan from `error.details.snapshot`** —
+   don't blindly retry, and don't issue a fresh `GET .../summary`
+   (it's already inline).
 6. On a network failure, **retry the same POST with the same key and
    the same body**. The bridge will return the cached response.
 
@@ -440,17 +486,17 @@ itself.
 - ✅ Send `baseRevision` for any non-trivial sequence of writes.
 - ✅ Use a UUID for `Idempotency-Key`, and **reuse it on retry** (same
   key + same body = cached response).
-- ✅ Batch related ops into a single `POST /edit` — they're applied
+- ✅ Batch related ops into a single `POST .../edit` — they're applied
   atomically.
 - ✅ Provide explicit `id`s on `addNode` whenever a same-batch
   `addEdge` will reference the new node.
 - ✅ Pre-serialise dates to ISO strings before putting them in `data`.
-- ✅ Replan from the snapshot embedded in `409 STALE_REVISION`
+- ✅ Replan from `error.details.snapshot` in `409 STALE_REVISION`
   responses.
 
 **DON'T:**
 
-- ❌ Don't poll `/snapshot` faster than ~once per second; the rate
+- ❌ Don't poll `/summary` faster than ~once per second; the rate
   limiter (60 ops/min, burst 10/sec by default) will return
   `429 RATE_LIMITED` with `Retry-After`.
 - ❌ Don't include `width`, `height`, `measured`, `selected`, or

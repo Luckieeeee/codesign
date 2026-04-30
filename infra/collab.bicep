@@ -38,6 +38,10 @@ param supabaseUrl string
 @description('Supabase service role key (server-side only)')
 param supabaseServiceRoleKey string
 
+@secure()
+@description('Agent bridge bearer secret (>= 16 chars). Required because COLLAB_WS_HOST is non-loopback; the bridge mounts in BRIDGE_DISABLED state without it.')
+param agentBridgeSecret string
+
 // ── Sizing ──────────────────────────────────────────────
 @description('CPU cores for the container')
 @allowed(['0.25', '0.5', '1', '2'])
@@ -120,6 +124,7 @@ resource collabApp 'Microsoft.App/containerApps@2024-03-01' = {
         [
           { name: 'supabase-url', value: supabaseUrl }
           { name: 'supabase-service-role-key', value: supabaseServiceRoleKey }
+          { name: 'codesign-agent-bridge-secret', value: agentBridgeSecret }
         ]
       )
 
@@ -152,11 +157,12 @@ resource collabApp 'Microsoft.App/containerApps@2024-03-01' = {
             memory: '${memoryGi}Gi'
           }
           env: [
-            { name: 'SUPABASE_URL',              secretRef: 'supabase-url' }
-            { name: 'SUPABASE_SERVICE_ROLE_KEY', secretRef: 'supabase-service-role-key' }
-            { name: 'COLLAB_WS_PORT',            value: string(collabPort) }
-            { name: 'COLLAB_WS_HOST',            value: '0.0.0.0' }
-            { name: 'NODE_ENV',                  value: 'production' }
+            { name: 'SUPABASE_URL',                  secretRef: 'supabase-url' }
+            { name: 'SUPABASE_SERVICE_ROLE_KEY',     secretRef: 'supabase-service-role-key' }
+            { name: 'CODESIGN_AGENT_BRIDGE_SECRET',  secretRef: 'codesign-agent-bridge-secret' }
+            { name: 'COLLAB_WS_PORT',                value: string(collabPort) }
+            { name: 'COLLAB_WS_HOST',                value: '0.0.0.0' }
+            { name: 'NODE_ENV',                      value: 'production' }
           ]
           probes: [
             {
