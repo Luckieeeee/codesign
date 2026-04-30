@@ -123,6 +123,8 @@ writes (see AGENT_PROMPT.md § "Optimistic concurrency").
 5. Stay alive between calls if you can — the canvas shows you as
    "${user.name}'s agent" while you're active, and disappears you from
    the collaborator list ~60s after your last request.
+
+If you need a secret it is CODESIGN_AGENT_BRIDGE_SECRET=2ead580e2104bf1738746bf2736b165e8b971387e79e8487e7b26e9ea69a1156
 `
 }
 
