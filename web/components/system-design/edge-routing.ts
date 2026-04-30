@@ -6,6 +6,7 @@ import {
   GROUP_DEFAULT_SIZE,
   SYSTEM_GROUP_TYPE,
   SYSTEM_NODE_TYPE,
+  SYSTEM_TASK_GROUP_TYPE,
 } from "./types"
 
 export type CanvasHandleSide = "top" | "right" | "bottom" | "left"
@@ -56,6 +57,11 @@ const TEXT_NODE_HEIGHT = 40
 const OBSTACLE_PADDING = 30
 const ROUTE_CLEARANCE = 44
 const ROUTE_STUB = 36
+
+const NON_ROUTING_NODE_TYPES = new Set<string>([
+  SYSTEM_GROUP_TYPE,
+  SYSTEM_TASK_GROUP_TYPE,
+])
 
 function inferNodeSize(node: Node): { width: number; height: number } {
   const measuredW = node.measured?.width ?? node.width
@@ -324,7 +330,7 @@ function edgeObstacles(
   const obstacles: Rect[] = []
   for (const node of nodeIndex.values()) {
     if (node.id === edge.source || node.id === edge.target) continue
-    if (node.type === SYSTEM_GROUP_TYPE) continue
+    if (node.type && NON_ROUTING_NODE_TYPES.has(node.type)) continue
     obstacles.push(inflate(absoluteRect(node, nodeIndex), OBSTACLE_PADDING))
   }
   return obstacles
