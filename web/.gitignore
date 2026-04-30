@@ -35,3 +35,7 @@ pnpm-debug.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# generated icon mirror (regenerate with `bun run icons`)
+/public/icons/
+/public/icons-manifest.json
