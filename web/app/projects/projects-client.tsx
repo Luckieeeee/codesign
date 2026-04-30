@@ -1,5 +1,6 @@
 "use client"
 
+import dynamic from "next/dynamic"
 import Link from "next/link"
 import { useRouter } from "next/navigation"
 import { useState, useTransition } from "react"
@@ -15,12 +16,25 @@ import {
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { createProject, type Project } from "@/lib/projects"
-import { cn } from "@/lib/utils"
+
+const ProjectPreviewTile = dynamic(
+  () =>
+    import("@/components/project-preview-tile").then(
+      (mod) => mod.ProjectPreviewTile
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="aspect-video animate-pulse rounded-xl border border-border bg-muted/40" />
+    ),
+  }
+)
 
 type Props = {
   initialProjects: Project[]
   loadError: string | null
   user: {
+    id: string
     email: string
     firstName: string | null
     lastName: string | null
@@ -37,6 +51,7 @@ export function ProjectsClient({ initialProjects, loadError, user }: Props) {
 
   const displayName =
     [user.firstName, user.lastName].filter(Boolean).join(" ") || user.email
+  const tileUserName = displayName
 
   const handleCreate = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -77,7 +92,7 @@ export function ProjectsClient({ initialProjects, loadError, user }: Props) {
         </div>
       </header>
 
-      <section className="mx-auto flex w-full max-w-4xl flex-col gap-8 px-6 py-10">
+      <section className="mx-auto flex w-full max-w-5xl flex-col gap-8 px-6 py-10">
         <div className="flex flex-col gap-2">
           <h1 className="font-heading text-2xl font-semibold tracking-tight">
             Projects
@@ -151,27 +166,13 @@ export function ProjectsClient({ initialProjects, loadError, user }: Props) {
               </CardContent>
             </Card>
           ) : (
-            <ul className="grid gap-3 sm:grid-cols-2">
+            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
               {projects.map((project) => (
                 <li key={project.id}>
-                  <Link
-                    href={`/projects/${project.id}`}
-                    className={cn(
-                      "block rounded-xl bg-card p-4 ring-1 ring-foreground/10 transition-colors",
-                      "hover:bg-muted"
-                    )}
-                  >
-                    <div className="font-heading text-base font-medium">
-                      {project.name}
-                    </div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      <span className="font-mono">{project.id}</span>
-                      <span className="mx-1.5">·</span>
-                      <span>
-                        Created {new Date(project.createdAt).toLocaleString()}
-                      </span>
-                    </div>
-                  </Link>
+                  <ProjectPreviewTile
+                    project={project}
+                    user={{ id: user.id, name: tileUserName }}
+                  />
                 </li>
               ))}
             </ul>
