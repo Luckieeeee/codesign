@@ -6,9 +6,16 @@ import type { Node } from "@xyflow/react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
 
 import type { SystemGroupData, SystemTextData } from "./types"
-import { SYSTEM_GROUP_TYPE, SYSTEM_TEXT_TYPE } from "./types"
+import {
+  BOUNDARY_COLORS,
+  BOUNDARY_COLOR_STYLES,
+  SYSTEM_GROUP_TYPE,
+  SYSTEM_TEXT_TYPE,
+  resolveBoundaryColor,
+} from "./types"
 
 type Props = {
   node: Node
@@ -65,6 +72,7 @@ function GroupInner({
 }) {
   const data = (node.data as SystemGroupData) ?? { label: "" }
   const [label, setLabel] = useState(data.label ?? "")
+  const colorKey = resolveBoundaryColor(data.color)
 
   // Reset draft when the selected group changes (derived-state pattern).
   const [lastId, setLastId] = useState(node.id)
@@ -107,9 +115,36 @@ function GroupInner({
           />
         </Field>
 
+        <Field label="Background colour">
+          <div className="flex flex-wrap gap-1.5">
+            {BOUNDARY_COLORS.map((c) => {
+              const styles = BOUNDARY_COLOR_STYLES[c]
+              const isActive = c === colorKey
+              return (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => onPatch(node.id, { color: c })}
+                  aria-label={`Set boundary colour to ${c}`}
+                  aria-pressed={isActive}
+                  title={c}
+                  className={cn(
+                    "size-6 rounded-md border-2 transition-all",
+                    styles.fill,
+                    isActive
+                      ? cn(styles.borderSelected, "ring-2 ring-foreground/30")
+                      : cn(styles.border, "hover:scale-110")
+                  )}
+                />
+              )
+            })}
+          </div>
+        </Field>
+
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           Drop icons inside the dashed box to nest them. Drag the corners to
-          resize. Children move with the group.
+          resize. Children move with the group. For task assignments, use
+          a Task Group instead.
         </p>
       </div>
 

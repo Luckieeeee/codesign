@@ -11,17 +11,25 @@ import {
   TARGET_HANDLE_IDS,
   positionForSide,
 } from "./edge-routing"
-import type { SystemGroupData } from "./types"
+import {
+  BOUNDARY_COLOR_STYLES,
+  resolveBoundaryColor,
+  type SystemGroupData,
+} from "./types"
 
 /**
- * Resizable container / boundary node.
+ * Resizable container / boundary node — the *generic* one.
  *
  * Behaves like a plain React Flow group: child nodes (those with
  * `parentId === <thisGroupId>`) move with it and clip to its bounds.
  *
- * Visual: dashed border + low-opacity fill + a small label chip in the top
- * left. Connection handles on all four sides so groups themselves can be
- * connected (e.g. "VPC A → VPC B").
+ * Visual: dashed border + low-opacity tinted fill (the `data.color` palette
+ * key) + a label chip in the top-left. Connection handles on all four
+ * sides so groups themselves can be connected (e.g. "VPC A → VPC B").
+ *
+ * If you want to assign a region of the canvas to a teammate, use the
+ * separate `systemTaskGroup` node type instead — task semantics live there,
+ * not here.
  */
 function SystemGroupNodeBase({
   id,
@@ -32,6 +40,8 @@ function SystemGroupNodeBase({
     onUpdate?: (id: string, patch: Partial<SystemGroupData>) => void
   }).onUpdate
   const label = data.label ?? "Group"
+  const colorKey = resolveBoundaryColor(data.color)
+  const styles = BOUNDARY_COLOR_STYLES[colorKey]
 
   const [isEditing, setIsEditing] = useState(false)
   const [draft, setDraft] = useState(label)
@@ -60,11 +70,10 @@ function SystemGroupNodeBase({
     <div
       className={cn(
         "group relative h-full w-full rounded-2xl border-2 border-dashed transition-colors",
-        // Subtle filled background so children read against the canvas grid.
-        "bg-muted/20",
+        styles.fill,
         selected
-          ? "border-foreground/40 ring-1 ring-foreground/20"
-          : "border-border hover:border-foreground/30"
+          ? cn(styles.borderSelected, "ring-1 ring-foreground/20")
+          : cn(styles.border, "hover:border-foreground/40")
       )}
     >
       <NodeResizer

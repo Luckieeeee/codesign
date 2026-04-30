@@ -28,6 +28,7 @@ import type { Edge, Node } from "@xyflow/react"
 
 import { getEdgesMap, getNodesMap } from "../../../lib/flow-core/graph"
 import { openProjectDoc } from "../../../lib/flow-core/document"
+import { getAgentsPresenceMap } from "../../../lib/flow-core/agent-presence"
 import {
   EditResponseSchema,
   NeighborhoodResponseSchema,
@@ -486,6 +487,87 @@ describe("POST /edit happy path", () => {
       stale.json as { error: { details?: { snapshot?: unknown } } }
     ).error.details
     expect(details?.snapshot).toBeDefined()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Agent presence (X-Agent-Owner-* + agents:presence Y.Map)
+// ---------------------------------------------------------------------------
+
+describe("agent presence", () => {
+  test("successful POST /edit writes the spawning user into agents:presence", async () => {
+    const r = await call("POST", `/api/agent/projects/${projectId}/edit`, {
+      agentId: "claude-1",
+      headers: {
+        "X-Agent-Name": "Alice's agent",
+        "X-Agent-Owner-Id": "user_01H_alice",
+        "X-Agent-Owner-Name": "Alice",
+        "X-Agent-Owner-Email": "alice@example.com",
+      },
+      body: {
+        ops: [
+          {
+            op: "addNode",
+            node: { position: { x: 0, y: 0 }, data: { label: "X" } },
+          },
+        ],
+      },
+    })
+    expect(r.status).toBe(200)
+
+    const conn = await openProjectDoc(server.hp, projectId)
+    let snapshot:
+      | { id: string; ownerId: string | null; ownerName: string | null }
+      | undefined
+    await conn.transact((doc) => {
+      const map = getAgentsPresenceMap(doc)
+      const entry = map.get("claude-1")
+      if (!entry) return
+      snapshot = {
+        id: entry.id,
+        ownerId: entry.ownerId ?? null,
+        ownerName: entry.ownerName ?? null,
+      }
+    })
+    expect(snapshot).toBeDefined()
+    expect(snapshot!.id).toBe("claude-1")
+    expect(snapshot!.ownerId).toBe("user_01H_alice")
+    expect(snapshot!.ownerName).toBe("Alice")
+  })
+
+  test("read-only GET requests do NOT write presence", async () => {
+    await call("GET", `/api/agent/projects/${projectId}/summary`, {
+      agentId: "lurker-1",
+      headers: {
+        "X-Agent-Owner-Name": "Bob",
+      },
+    })
+
+    const conn = await openProjectDoc(server.hp, projectId)
+    let hasEntry = false
+    await conn.transact((doc) => {
+      hasEntry = getAgentsPresenceMap(doc).has("lurker-1")
+    })
+    expect(hasEntry).toBe(false)
+  })
+
+  test("rejected POST /edit (validation failure) does NOT write presence", async () => {
+    const r = await call("POST", `/api/agent/projects/${projectId}/edit`, {
+      agentId: "rejected-1",
+      headers: {
+        "X-Agent-Owner-Name": "Carol",
+      },
+      // deleteNode for a non-existent id → 404 NODE_NOT_FOUND, transact aborts
+      body: { ops: [{ op: "deleteNode", id: "ghost-node" }] },
+    })
+    expect(r.status).toBe(404)
+
+    const conn = await openProjectDoc(server.hp, projectId)
+    let hasEntry = false
+    await conn.transact((doc) => {
+      hasEntry = getAgentsPresenceMap(doc).has("rejected-1")
+    })
+    expect(hasEntry).toBe(false)
   })
 })
 

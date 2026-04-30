@@ -47,6 +47,9 @@ bridge routes sit at the root.
 | `X-Agent-Id`           | **always**                         | Stable slug for you (e.g. `claude-code`). Used in provenance, rate-limit key, idempotency key. |
 | `X-Agent-Name`         | optional                           | Human-friendly name. Surfaces in logs / future presence pip.         |
 | `X-Agent-Run-Id`       | optional                           | Opaque trace id; written into `data.__codesign.runId` on every entity you create or update. |
+| `X-Agent-Owner-Id`     | optional                           | WorkOS user id of the human who spawned you. When set, you appear in the live collaborator list as **"Owner&apos;s agent"**. |
+| `X-Agent-Owner-Name`   | optional                           | Display name of the spawning human (used in the presence chip).      |
+| `X-Agent-Owner-Email`  | optional                           | Email of the spawning human (shown in the hover-card subtext).       |
 | `Authorization`        | required iff bridge has a secret   | `Bearer <secret>`. Checked against `CODESIGN_AGENT_BRIDGE_SECRET`.   |
 | `X-Agent-Token`        | alternative to `Authorization`     | Same secret, different header. Pick one.                             |
 | `Idempotency-Key`      | required on `POST /edit` (default) | UUID or any opaque string. See **Idempotency** below.                |
@@ -56,6 +59,23 @@ If the operator has set `CODESIGN_AGENT_BRIDGE_SECRET`, you must
 present the secret as either `Authorization: Bearer <secret>` **or**
 `X-Agent-Token: <secret>`. If the secret is unset (loopback-only dev),
 no token is required.
+
+### Owner attribution (live presence)
+
+When you send `X-Agent-Owner-Id` / `X-Agent-Owner-Name` /
+`X-Agent-Owner-Email`, codesign records you in a Yjs-synced
+`agents:presence` map keyed by `X-Agent-Id`. Every browser viewing this
+project sees you appear in the collaborator list — labelled
+**"Owner-Name's agent"** — within the same Yjs broadcast as your
+edits, with no extra plumbing on either side.
+
+Each request refreshes the entry's `lastSeenAt`. Browsers filter out
+entries older than 60s, so an agent that stops sending requests
+disappears automatically; the bridge also reaps entries older than
+10min on every write to keep the map bounded. The collaborator&apos;s
+"Spawn agent" dialog auto-fills these headers with the human's WorkOS
+identity; if you're driving the bridge by hand, set them yourself so
+your work is correctly attributed.
 
 ### Idempotency
 

@@ -59,6 +59,7 @@ import { ZodError } from "zod"
 import { AgentError, formatError } from "../../lib/flow-core/errors"
 import { applyEdit } from "../../lib/flow-core/operations"
 import { neighborhood, state, summary } from "../../lib/flow-core/snapshot"
+import { touchAgentPresence } from "../../lib/flow-core/agent-presence"
 import {
   EditRequestBodySchema,
   EditResponseSchema,
@@ -643,6 +644,23 @@ async function runEdit(
   const editResp = await applyEdit(conn, parsed.ops, flowIdentity, {
     baseRevision: parsed.baseRevision,
     idempotencyKey,
+    // Touch agent presence INSIDE applyEdit's transact, so:
+    //   1. The edit and the presence write commit as one Yjs update
+    //      (single broadcast), and
+    //   2. Validation failures (NaN data, missing nodes, stale revision,
+    //      …) abort the whole transact, including this presence write —
+    //      so an agent that only sends invalid edits doesn't pollute
+    //      the collaborator list.
+    onCommit: (doc) => {
+      touchAgentPresence(doc, {
+        id: identity.id,
+        name: identity.name ?? identity.id,
+        ownerId: identity.ownerId,
+        ownerName: identity.ownerName,
+        ownerEmail: identity.ownerEmail,
+        runId: identity.runId,
+      })
+    },
   })
 
   const body = EditResponseSchema.parse(editResp)

@@ -29,6 +29,9 @@ describe("parseAgentHeaders", () => {
     expect(identity.name).toBeNull()
     expect(identity.runId).toBeNull()
     expect(identity.token).toBeNull()
+    expect(identity.ownerId).toBeNull()
+    expect(identity.ownerName).toBeNull()
+    expect(identity.ownerEmail).toBeNull()
   })
 
   test("throws UNAUTHORIZED when X-Agent-Id is missing", () => {
@@ -127,11 +130,47 @@ describe("parseAgentHeaders", () => {
     expect(identity.name).toBeNull()
     expect(identity.runId).toBeNull()
   })
+
+  test("populates X-Agent-Owner-Id / -Name / -Email when present", () => {
+    const identity = parseAgentHeaders(
+      fakeReq({
+        "X-Agent-Id": "claude-1",
+        "X-Agent-Owner-Id": "user_01H",
+        "X-Agent-Owner-Name": "Alice",
+        "X-Agent-Owner-Email": "alice@example.com",
+      }),
+    )
+    expect(identity.ownerId).toBe("user_01H")
+    expect(identity.ownerName).toBe("Alice")
+    expect(identity.ownerEmail).toBe("alice@example.com")
+  })
+
+  test("trims and empties owner headers consistently", () => {
+    const identity = parseAgentHeaders(
+      fakeReq({
+        "X-Agent-Id": "claude-1",
+        "X-Agent-Owner-Id": "  user_01H  ",
+        "X-Agent-Owner-Name": "",
+        "X-Agent-Owner-Email": "   ",
+      }),
+    )
+    expect(identity.ownerId).toBe("user_01H")
+    expect(identity.ownerName).toBeNull()
+    expect(identity.ownerEmail).toBeNull()
+  })
 })
 
 describe("checkSecret", () => {
   function identityWith(token: string | null): AgentIdentity {
-    return { id: "claude-1", name: null, runId: null, token }
+    return {
+      id: "claude-1",
+      name: null,
+      runId: null,
+      token,
+      ownerId: null,
+      ownerName: null,
+      ownerEmail: null,
+    }
   }
 
   test("secret: null always allows, even when token is null", () => {

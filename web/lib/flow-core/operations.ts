@@ -50,6 +50,7 @@
 import { randomBytes } from "node:crypto"
 import type { DirectConnection } from "@hocuspocus/server"
 import type { Edge, Node } from "@xyflow/react"
+import type * as Y from "yjs"
 
 import { AgentError } from "./errors"
 import { edgesTouchingNode, getEdgesMap, getNodesMap } from "./graph"
@@ -71,6 +72,23 @@ const MAX_OPS = 50
 export interface ApplyEditOptions {
   baseRevision?: string
   idempotencyKey?: string | null
+  /**
+   * Optional hook called inside the same `Y.transact` as the commit,
+   * AFTER validation has fully succeeded but BEFORE the projection is
+   * written back to the live `Y.Map`s. Used by the agent bridge to
+   * touch its presence map atomically with the edit.
+   *
+   * Throwing from the hook aborts the whole edit (no partial writes),
+   * so callers must be defensive about side-effects.
+   *
+   * Why inside the same transact? Two reasons:
+   *   1. Single Yjs broadcast — observers see one update for "agent
+   *      arrived + made these changes" instead of two.
+   *   2. The `STALE_REVISION` check uses `revisionBefore` (computed
+   *      before this hook runs), so adding presence writes here doesn't
+   *      retroactively invalidate an agent's `baseRevision`.
+   */
+  onCommit?: (doc: Y.Doc) => void
 }
 
 interface Audit {
@@ -447,6 +465,17 @@ export async function applyEdit(
     const edgesProj = projectMap<Edge>(edgesMap)
 
     const audit = applyOpsToProjection(ops, nodesProj, edgesProj, identity)
+
+    // Optional commit hook — runs AFTER validation has fully succeeded
+    // (any validation throw above bubbled out before reaching here) but
+    // BEFORE the projection is committed to the live `Y.Map`s. The hook
+    // can write to the doc; those writes batch into the same Yjs update
+    // as the edit so observers see exactly one broadcast for the whole
+    // transaction. Throwing from the hook still aborts the edit (the
+    // transact body unwinds before the per-Map writes below run).
+    if (opts.onCommit !== undefined) {
+      opts.onCommit(doc)
+    }
 
     // Commit the diff to the live Y.Maps in one batch. Yjs collapses
     // these into a single update event so observers see one broadcast

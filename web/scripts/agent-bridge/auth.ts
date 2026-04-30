@@ -10,6 +10,19 @@ export interface AgentIdentity {
   runId: string | null
   /** The bearer/X-Agent-Token value if present, else null. Don't log. */
   token: string | null
+  /**
+   * Owner — the human who spawned this agent. Carried in
+   * `X-Agent-Owner-Id` / `-Name` / `-Email` headers, all optional. When
+   * present, the canvas presence UI surfaces "Owner's agent" so other
+   * collaborators can see whose process is editing alongside them.
+   *
+   * `ownerId` is meant to be the WorkOS user id (matches the values
+   * served by `listAssignableUsers()`), but we don't enforce a format
+   * here — the bridge passes the value through opaquely.
+   */
+  ownerId: string | null
+  ownerName: string | null
+  ownerEmail: string | null
 }
 
 export interface AuthConfig {
@@ -48,6 +61,12 @@ export function parseAgentHeaders(req: IncomingMessage): AgentIdentity {
   const name = trimOrNull(getHeader(req, "X-Agent-Name"))
   const runId = trimOrNull(getHeader(req, "X-Agent-Run-Id"))
 
+  // Owner headers — all optional. Trim/null-coerce so empty strings
+  // don't accidentally surface as "'s agent" with no name.
+  const ownerId = trimOrNull(getHeader(req, "X-Agent-Owner-Id"))
+  const ownerName = trimOrNull(getHeader(req, "X-Agent-Owner-Name"))
+  const ownerEmail = trimOrNull(getHeader(req, "X-Agent-Owner-Email"))
+
   // Precedence: when both `Authorization: Bearer <token>` and
   // `X-Agent-Token` are present (and differ), the bearer in the
   // standard `Authorization` header wins. `X-Agent-Token` is a
@@ -56,7 +75,7 @@ export function parseAgentHeaders(req: IncomingMessage): AgentIdentity {
   const xToken = getHeader(req, "X-Agent-Token")
   const token = bearer ?? (xToken === null || xToken === "" ? null : xToken)
 
-  return { id, name, runId, token }
+  return { id, name, runId, token, ownerId, ownerName, ownerEmail }
 }
 
 function constantTimeEqual(a: string, b: string): boolean {

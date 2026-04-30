@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils"
 
 import {
   CONTAINER_GROUP_ID,
+  CONTAINER_TASK_GROUP_ID,
   CONTAINER_TEXT_ID,
   ICON_DRAG_MIME,
   type IconEntry,
@@ -143,7 +144,7 @@ export function IconSidebar({ className, side = "left" }: IconSidebarProps) {
         {!queryActive && (
           <CategoryGroup
             title="Containers"
-            count={2}
+            count={3}
             isOpen={open["__containers__"] ?? true}
             onToggle={() =>
               setOpen((prev) => ({
@@ -159,6 +160,14 @@ export function IconSidebar({ className, side = "left" }: IconSidebarProps) {
                 description="Boundary / cluster"
                 preview={
                   <div className="size-7 rounded-md border-2 border-dashed border-foreground/40" />
+                }
+              />
+              <ContainerTile
+                id={CONTAINER_TASK_GROUP_ID}
+                name="Task"
+                description="Assigned region"
+                preview={
+                  <div className="size-7 rounded-md border-2 border-sky-500/50 bg-sky-500/15" />
                 }
               />
               <ContainerTile

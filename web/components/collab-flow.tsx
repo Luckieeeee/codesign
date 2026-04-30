@@ -26,7 +26,14 @@ import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as Y from "yjs"
 
+import { listAssignableUsers } from "@/app/actions/workos-users"
 import { ActionToolbar } from "@/components/system-design/action-toolbar"
+import { SpawnAgentDialog } from "@/components/system-design/agent-spawn-dialog"
+import {
+    AGENTS_PRESENCE_KEY,
+    PRESENCE_STALE_AFTER_MS,
+    type AgentPresenceEntry,
+} from "@/lib/flow-core/agent-presence"
 import { computeAutoLayout } from "@/components/system-design/auto-layout"
 import { CanvasAgent } from "@/components/system-design/canvas-agent"
 import { ContainerInspector } from "@/components/system-design/container-inspector"
@@ -39,21 +46,33 @@ import { IconSidebar } from "@/components/system-design/icon-sidebar"
 import { SystemEdge } from "@/components/system-design/labeled-edge"
 import { NodeInspector } from "@/components/system-design/node-inspector"
 import { SystemTextNode } from "@/components/system-design/text-node"
+import {
+    TaskGroupInspector,
+    type AssigneeOption,
+} from "@/components/system-design/task-group-inspector"
+import { SystemTaskGroupNode } from "@/components/system-design/task-group-node"
 import { useCanvasAgent } from "@/components/system-design/use-canvas-agent"
 import {
     CONTAINER_GROUP_ID,
+    CONTAINER_TASK_GROUP_ID,
     CONTAINER_TEXT_ID,
+    DEFAULT_TASK_VISIBILITY,
     GROUP_DEFAULT_SIZE,
     ICON_DRAG_MIME,
     SYSTEM_EDGE_TYPE,
     SYSTEM_GROUP_TYPE,
     SYSTEM_NODE_TYPE,
+    SYSTEM_TASK_GROUP_TYPE,
     SYSTEM_TEXT_TYPE,
+    TASK_GROUP_DEFAULT_SIZE,
+    TASK_VISIBILITY_OPTIONS,
     type IconEntry,
     type SystemEdgeData,
     type SystemGroupData,
     type SystemNodeData,
+    type SystemTaskGroupData,
     type SystemTextData,
+    type TaskVisibility,
 } from "@/components/system-design/types"
 import { useFlowKeyboard } from "@/components/system-design/use-flow-keyboard"
 import { useYjsUndo } from "@/components/system-design/use-yjs-undo"
@@ -72,10 +91,27 @@ import type { Project } from "@/lib/projects"
 import { cn } from "@/lib/utils"
 
 type CollaboratorPresence = {
-    id: number
+    id: number | string
     name: string
     color: string
     cursor: { x: number; y: number } | null
+    /** "human" for live browsers, "agent" for HTTP-bridge agents that
+     *  appear via the `agents:presence` Y.Map. */
+    kind: "human" | "agent"
+    /**
+     * For agents only: the human who spawned this agent (per
+     * `X-Agent-Owner-*` headers). Surfaces as "Owner's agent" in the
+     * presence list, with `ownerEmail` shown as a secondary line in the
+     * hover card.
+     */
+    owner?: {
+        id: string | null
+        name: string | null
+        email: string | null
+    }
+    /** For agents only: the most recent run id so the inspector can
+     *  surface it for debugging. */
+    runId?: string | null
 }
 
 export type CollabUser = {
@@ -123,6 +159,21 @@ const getWsUrl = () => {
     return "ws://localhost:1234"
 }
 
+/**
+ * Module-level cache for the WorkOS user directory. The first CollabFlow
+ * instance to mount kicks off the server action; every subsequent mount in
+ * the same browser session reuses the resolved list. Errors are absorbed
+ * (action returns `[]`), so consumers can render an empty state instead of
+ * crashing on a transient WorkOS hiccup.
+ */
+let assignableUsersPromise: Promise<AssigneeOption[]> | null = null
+function loadAssignableUsers(): Promise<AssigneeOption[]> {
+    if (!assignableUsersPromise) {
+        assignableUsersPromise = listAssignableUsers().catch(() => [])
+    }
+    return assignableUsersPromise
+}
+
 const EDGE_MARKER_END = {
     type: MarkerType.ArrowClosed,
     width: 14,
@@ -139,6 +190,7 @@ const TEXT_TILE_HALF_HEIGHT = 16
 const NODE_TYPES = {
     [SYSTEM_NODE_TYPE]: SystemIconNode,
     [SYSTEM_GROUP_TYPE]: SystemGroupNode,
+    [SYSTEM_TASK_GROUP_TYPE]: SystemTaskGroupNode,
     [SYSTEM_TEXT_TYPE]: SystemTextNode,
 } as const
 
@@ -158,6 +210,15 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
     const [nodes, setNodes] = useState<Node[]>(DEFAULT_NODES)
     const [edges, setEdges] = useState<Edge[]>(DEFAULT_EDGES)
     const [collaborators, setCollaborators] = useState<CollaboratorPresence[]>([])
+    /**
+     * Agents currently active on this canvas — populated from the
+     * `agents:presence` Y.Map by an observer in the main provider effect.
+     * Kept separate from human collaborators so cursor rendering can skip
+     * agents (they have no `cursor` field) without runtime checks.
+     */
+    const [agentCollaborators, setAgentCollaborators] = useState<
+        CollaboratorPresence[]
+    >([])
     const [status, setStatus] = useState<
         "connecting" | "connected" | "disconnected"
     >("connecting")
@@ -166,6 +227,71 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
         | { kind: "edge"; id: string }
         | null
     >(null)
+
+    // Per-user task-group visibility — `all` shows every task region, `mine`
+    // shows only tasks assigned to the current user, `none` hides them all.
+    // Persisted to localStorage so the choice survives reloads but is not
+    // synced across collaborators (intentionally — each viewer picks their
+    // own focus).
+    const [taskVisibility, setTaskVisibility] = useState<TaskVisibility>(
+        DEFAULT_TASK_VISIBILITY
+    )
+    useEffect(() => {
+        if (typeof window === "undefined") return
+        try {
+            const raw = window.localStorage.getItem(
+                `codesign:task-visibility:${project.id}`
+            )
+            if (
+                raw &&
+                (TASK_VISIBILITY_OPTIONS as readonly string[]).includes(raw)
+            ) {
+                setTaskVisibility(raw as TaskVisibility)
+            }
+        } catch {
+            /* localStorage may be blocked; fall back to default */
+        }
+    }, [project.id])
+    const handleChangeTaskVisibility = useCallback(
+        (next: TaskVisibility) => {
+            setTaskVisibility(next)
+            if (typeof window !== "undefined") {
+                try {
+                    window.localStorage.setItem(
+                        `codesign:task-visibility:${project.id}`,
+                        next
+                    )
+                } catch {
+                    /* ignore quota / privacy errors */
+                }
+            }
+        },
+        [project.id]
+    )
+
+    // WorkOS-backed assignee directory. Fetched once on first mount via the
+    // `listAssignableUsers` server action and cached at module scope so other
+    // CollabFlow instances mounted in the same page reuse the same Promise.
+    const [members, setMembers] = useState<AssigneeOption[]>([])
+    const [membersLoading, setMembersLoading] = useState(true)
+    useEffect(() => {
+        let cancelled = false
+        loadAssignableUsers()
+            .then((list) => {
+                if (cancelled) return
+                setMembers(list)
+            })
+            .catch(() => {
+                /* loadAssignableUsers swallows errors and returns []; the
+                 * .catch is here only for unexpected promise rejections */
+            })
+            .finally(() => {
+                if (!cancelled) setMembersLoading(false)
+            })
+        return () => {
+            cancelled = true
+        }
+    }, [])
 
     // Stable Yjs doc + provider for the lifetime of this component instance.
     const ydoc = useMemo(() => new Y.Doc(), [])
@@ -254,15 +380,55 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
                     name: u.name,
                     color: u.color,
                     cursor: cursor ?? null,
+                    kind: "human",
                 })
             })
             setCollaborators(others)
         }
         provider.awareness?.on("change", onAwarenessChange)
 
+        // ---- Agent presence observer ----------------------------------------
+        // Agents that talk to the HTTP bridge don't have a WebSocket / awareness
+        // clientID, so they appear via a Y.Map at AGENTS_PRESENCE_KEY instead.
+        // We snapshot it on every change AND poll once a second so stale
+        // entries (`lastSeenAt < now - PRESENCE_STALE_AFTER_MS`) disappear from
+        // the UI even when no further yjs events fire.
+        const agentsMap = ydoc.getMap<AgentPresenceEntry>(AGENTS_PRESENCE_KEY)
+        const refreshAgents = () => {
+            const now = Date.now()
+            const cutoff = now - PRESENCE_STALE_AFTER_MS
+            const out: CollaboratorPresence[] = []
+            agentsMap.forEach((entry) => {
+                if (entry.lastSeenAt < cutoff) return
+                out.push({
+                    id: `agent:${entry.id}`,
+                    name: entry.name,
+                    color: entry.color,
+                    cursor: null,
+                    kind: "agent",
+                    owner: {
+                        id: entry.ownerId ?? null,
+                        name: entry.ownerName ?? null,
+                        email: entry.ownerEmail ?? null,
+                    },
+                    runId: entry.runId ?? null,
+                })
+            })
+            setAgentCollaborators(out)
+        }
+        const onAgentsChange = () => refreshAgents()
+        agentsMap.observe(onAgentsChange)
+        refreshAgents()
+        // Tick every second so an entry whose lastSeenAt drifts past the
+        // staleness threshold disappears without waiting for another agent
+        // request to trigger a yjs event.
+        const stalePollInterval = window.setInterval(refreshAgents, 1_000)
+
         return () => {
             ynodes.unobserveDeep(onNodesObserve)
             yedges.unobserveDeep(onEdgesObserve)
+            agentsMap.unobserve(onAgentsChange)
+            window.clearInterval(stalePollInterval)
             provider.awareness?.off("change", onAwarenessChange)
             provider.awareness?.setLocalState(null)
             provider.destroy()
@@ -303,6 +469,11 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
     )
     const patchGroupNodeData = useCallback(
         (id: string, patch: Partial<SystemGroupData>) => patchNodeData(id, patch),
+        [patchNodeData]
+    )
+    const patchTaskGroupNodeData = useCallback(
+        (id: string, patch: Partial<SystemTaskGroupData>) =>
+            patchNodeData(id, patch),
         [patchNodeData]
     )
     const patchTextNodeData = useCallback(
@@ -379,16 +550,49 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
     // Decorate nodes with the inline-edit handler before passing to React Flow.
     // We never write the handler back into Yjs — it lives in the React layer
     // only, since Yjs maps must hold serialisable values.
+    //
+    // This stage also:
+    //   - Applies the per-user task-group visibility toggle (`all` / `mine`
+    //     / `none`) by filtering out task groups that don't match.
+    //   - Forces `zIndex: -10000` on every task group so they render *behind*
+    //     icons, generic groups, AND edges regardless of insertion order.
+    //     The depth (vs `-1`) matters because React Flow's
+    //     `elevateNodesOnSelect` (default `true`) adds +1000 to a selected
+    //     node's z-index — with `-1` a selected task group would pop above
+    //     unselected icons. `-10000` keeps it pinned to the bottom even
+    //     when selected. Task groups created before the field existed still
+    //     render correctly.
     const nodesForFlow = useMemo(
-        () =>
-            nodes.map((node) => ({
-                ...node,
-                data: {
-                    ...((node.data as Record<string, unknown>) ?? {}),
-                    onUpdate: stableNodeUpdate,
-                },
-            })),
-        [nodes, stableNodeUpdate]
+        () => {
+            const out: Node[] = []
+            for (const node of nodes) {
+                if (node.type === SYSTEM_TASK_GROUP_TYPE) {
+                    if (taskVisibility === "none") continue
+                    if (taskVisibility === "mine") {
+                        const data = node.data as SystemTaskGroupData | undefined
+                        if (data?.assignee?.id !== user.id) continue
+                    }
+                    out.push({
+                        ...node,
+                        zIndex: -10000,
+                        data: {
+                            ...((node.data as Record<string, unknown>) ?? {}),
+                            onUpdate: stableNodeUpdate,
+                        },
+                    })
+                    continue
+                }
+                out.push({
+                    ...node,
+                    data: {
+                        ...((node.data as Record<string, unknown>) ?? {}),
+                        onUpdate: stableNodeUpdate,
+                    },
+                })
+            }
+            return out
+        },
+        [nodes, stableNodeUpdate, taskVisibility, user.id]
     )
     const edgesForFlow = useMemo(
         () => routeEdges(edges, nodes, { rerouteHandles: false }),
@@ -549,6 +753,42 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
                 setSelection({ kind: "node", id })
                 return id
             }
+            if (icon.id === CONTAINER_TASK_GROUP_ID) {
+                const id = newNodeId("tg")
+                // Default colour `sky` makes a freshly-spawned task region
+                // visually distinct from the muted generic group, and the
+                // current user is pre-assigned so a quick "drop in / type
+                // task / done" flow doesn't require opening the picker.
+                const data: SystemTaskGroupData = {
+                    label: "Task",
+                    color: "sky",
+                    assignee: {
+                        id: user.id,
+                        name: user.name,
+                        email: user.email,
+                    },
+                    status: "todo",
+                }
+                const node: Node = {
+                    id,
+                    type: SYSTEM_TASK_GROUP_TYPE,
+                    position: {
+                        x: position.x - TASK_GROUP_DEFAULT_SIZE.width / 2,
+                        y: position.y - TASK_GROUP_DEFAULT_SIZE.height / 2,
+                    },
+                    width: TASK_GROUP_DEFAULT_SIZE.width,
+                    height: TASK_GROUP_DEFAULT_SIZE.height,
+                    // Pin to the absolute bottom of the canvas. Deep enough
+                    // that React Flow's selection elevation (+1000) still
+                    // leaves the node below every other layer. See the
+                    // matching note in `nodesForFlow`.
+                    zIndex: -10000,
+                    data,
+                }
+                ydoc.transact(() => ynodes.set(id, node), "local")
+                setSelection({ kind: "node", id })
+                return id
+            }
             if (icon.id === CONTAINER_TEXT_ID) {
                 const id = newNodeId("t")
                 const node: Node = {
@@ -597,7 +837,7 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
             setSelection({ kind: "node", id })
             return id
         },
-        [ydoc, ynodes, reactFlow]
+        [ydoc, ynodes, reactFlow, user.id, user.name, user.email]
     )
 
     // ---- Drag-and-drop from the icon sidebar --------------------------------
@@ -660,6 +900,22 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
             {
                 id: CONTAINER_TEXT_ID,
                 name: "Note",
+                path: "",
+                category: "generic",
+            },
+            center
+        )
+    }, [reactFlow, spawnFromIcon])
+
+    const addTaskGroupAtViewportCenter = useCallback(() => {
+        const center = reactFlow.screenToFlowPosition({
+            x: window.innerWidth / 2,
+            y: window.innerHeight / 2,
+        })
+        spawnFromIcon(
+            {
+                id: CONTAINER_TASK_GROUP_ID,
+                name: "Task",
                 path: "",
                 category: "generic",
             },
@@ -938,6 +1194,18 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
                     />
                 )
             }
+            if (selectedNode.type === SYSTEM_TASK_GROUP_TYPE) {
+                return (
+                    <TaskGroupInspector
+                        node={selectedNode}
+                        members={members}
+                        membersLoading={membersLoading}
+                        onPatch={patchTaskGroupNodeData}
+                        onDelete={deleteNode}
+                        onClose={clearSelection}
+                    />
+                )
+            }
             if (
                 selectedNode.type === SYSTEM_GROUP_TYPE ||
                 selectedNode.type === SYSTEM_TEXT_TYPE
@@ -1058,7 +1326,15 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
 
                             <Panel position="top-right">
                                 <div className="flex items-center gap-2 rounded-full border border-border/60 bg-card px-2 py-1 shadow-sm backdrop-blur-md">
-                                    <PresenceStack me={presence} others={collaborators} />
+                                    <PresenceStack
+                                        me={presence}
+                                        humans={collaborators}
+                                        agents={agentCollaborators}
+                                    />
+                                    <SpawnAgentDialog
+                                        projectId={project.id}
+                                        user={user}
+                                    />
                                     <Button size="xs" variant="ghost" onClick={copyShareLink}>
                                         {shareCopied ? "Link copied" : "Share"}
                                     </Button>
@@ -1092,8 +1368,11 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
                             canRedo={canRedo}
                             onAddGroup={addGroupAtViewportCenter}
                             onAddText={addTextAtViewportCenter}
+                            onAddTaskGroup={addTaskGroupAtViewportCenter}
                             onAutoLayout={runAutoLayout}
                             canAutoLayout={nodes.length > 0}
+                            taskVisibility={taskVisibility}
+                            onChangeTaskVisibility={handleChangeTaskVisibility}
                         />
 
                         <CanvasAgent
@@ -1129,15 +1408,21 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
  * children, otherwise child positions are interpreted as absolute and they
  * leap out of the group on first render. Yjs maps don't preserve insertion
  * order across clients, so we sort defensively after every snapshot.
+ *
+ * Task groups are sorted to the very front so React Flow paints them first
+ * (behind every other node). Their `zIndex: -10000` (set in `nodesForFlow`)
+ * reinforces the back-of-canvas placement regardless of insertion order.
  */
 function sortByGroupParenting(list: Node[]): Node[] {
+    const taskGroups: Node[] = []
     const groups: Node[] = []
     const others: Node[] = []
     for (const n of list) {
-        if (n.type === SYSTEM_GROUP_TYPE) groups.push(n)
+        if (n.type === SYSTEM_TASK_GROUP_TYPE) taskGroups.push(n)
+        else if (n.type === SYSTEM_GROUP_TYPE) groups.push(n)
         else others.push(n)
     }
-    return [...groups, ...others]
+    return [...taskGroups, ...groups, ...others]
 }
 
 /**
@@ -1201,78 +1486,161 @@ function stripEdgeRuntime(edge: Edge): Edge {
 
 function PresenceStack({
     me,
-    others,
+    humans,
+    agents,
 }: {
     me: { name: string; color: string }
-    others: CollaboratorPresence[]
+    humans: CollaboratorPresence[]
+    agents: CollaboratorPresence[]
 }) {
-    const all = [
-        { id: -1, name: me.name, color: me.color, isMe: true },
-        ...others,
+    /**
+     * Agent display name: "Owner's agent" when the spawning user is known,
+     * otherwise the agent's own name. Trimmed defensively because the
+     * X-Agent-Owner-Name header is free-form.
+     */
+    const formatAgentName = (a: CollaboratorPresence): string => {
+        const owner = a.owner?.name?.trim()
+        if (owner) return `${owner}'s agent`
+        return a.name
+    }
+
+    type RowSelf = { kind: "self"; id: string; name: string; color: string }
+    type RowHuman = {
+        kind: "human"
+        id: number | string
+        name: string
+        color: string
+    }
+    type RowAgent = {
+        kind: "agent"
+        id: number | string
+        name: string
+        color: string
+        owner: CollaboratorPresence["owner"]
+    }
+    type Row = RowSelf | RowHuman | RowAgent
+
+    const rows: Row[] = [
+        { kind: "self", id: "self", name: me.name, color: me.color },
+        ...humans.map((u) => ({
+            kind: "human" as const,
+            id: u.id,
+            name: u.name,
+            color: u.color,
+        })),
+        ...agents.map((a) => ({
+            kind: "agent" as const,
+            id: a.id,
+            name: formatAgentName(a),
+            color: a.color,
+            owner: a.owner,
+        })),
     ]
-    const visible = all.slice(0, 5)
-    const overflowCount = all.length - visible.length
+
+    const visible = rows.slice(0, 5)
+    const overflowCount = rows.length - visible.length
     return (
         <HoverCard>
             <HoverCardTrigger
+                delay={80}
+                closeDelay={120}
                 render={
-                    <div
-                        className="flex -space-x-2"
-                        aria-label={`${all.length} ${all.length === 1 ? "person" : "people"} on this canvas`}
+                    <button
+                        type="button"
+                        className="flex -space-x-2 outline-hidden focus-visible:ring-2 focus-visible:ring-ring/40 rounded-full"
+                        aria-label={`${rows.length} ${rows.length === 1 ? "person" : "people"} on this canvas`}
                     />
                 }
             >
                 {visible.map((u) => (
                     <div
-                        key={u.id}
-                        className="flex size-6 items-center justify-center rounded-full border-2 border-background text-[10px] font-semibold text-white"
+                        key={String(u.id)}
+                        className={cn(
+                            "flex size-6 items-center justify-center rounded-full border-2 border-background text-[10px] font-semibold text-white",
+                            // Square corners + dashed ring for agents so they
+                            // read distinctly from human avatars at a glance.
+                            u.kind === "agent" && "rounded-md ring-1 ring-background"
+                        )}
                         style={{ backgroundColor: u.color }}
+                        title={u.name}
                     >
-                        {u.name
-                            .split(" ")
-                            .map((part) => part[0])
-                            .join("")
-                            .slice(0, 2)
-                            .toUpperCase()}
+                        {u.kind === "agent" ? (
+                            // Bot glyph — Lucide's BotIcon-equivalent inlined to
+                            // avoid pulling another import here.
+                            <svg
+                                width="10"
+                                height="10"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                strokeWidth="2.5"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                            >
+                                <rect x="4" y="8" width="16" height="12" rx="2" />
+                                <path d="M12 4v4" />
+                                <circle cx="9" cy="14" r="0.5" fill="currentColor" />
+                                <circle cx="15" cy="14" r="0.5" fill="currentColor" />
+                            </svg>
+                        ) : (
+                            initialsOf(u.name)
+                        )}
                     </div>
                 ))}
                 {overflowCount > 0 && (
-                    <div className="flex size-6 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px] font-semibold">
+                    <div className="flex size-6 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px] font-semibold text-muted-foreground">
                         +{overflowCount}
                     </div>
                 )}
             </HoverCardTrigger>
-            <HoverCardContent align="end" className="w-56 p-1.5">
-                <div className="px-2 py-1 text-[11px] font-medium text-muted-foreground">
-                    {all.length === 1
-                        ? "1 person here"
-                        : `${all.length} people here`}
+            <HoverCardContent
+                align="end"
+                sideOffset={8}
+                className="w-64 p-0 overflow-hidden"
+            >
+                <div className="flex items-center justify-between px-3 py-2 border-b border-border/60">
+                    <span className="text-[11px] font-medium tracking-wide uppercase text-muted-foreground">
+                        On this canvas
+                    </span>
+                    <span className="text-[11px] tabular-nums text-muted-foreground/80">
+                        {rows.length}
+                    </span>
                 </div>
-                <ul className="flex flex-col">
-                    {all.map((u) => {
-                        const isMe = "isMe" in u && u.isMe
+                <ul className="flex flex-col py-1">
+                    {rows.map((u) => {
+                        const isMe = u.kind === "self"
+                        const isAgent = u.kind === "agent"
                         return (
                             <li
-                                key={u.id}
-                                className="flex items-center gap-2 rounded-md px-2 py-1.5"
+                                key={String(u.id)}
+                                className="flex items-center gap-2.5 px-3 py-1.5"
                             >
                                 <span
-                                    className="flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+                                    className={cn(
+                                        "size-2 shrink-0",
+                                        isAgent ? "rounded-sm" : "rounded-full"
+                                    )}
                                     style={{ backgroundColor: u.color }}
-                                >
-                                    {u.name
-                                        .split(" ")
-                                        .map((part) => part[0])
-                                        .join("")
-                                        .slice(0, 2)
-                                        .toUpperCase()}
-                                </span>
-                                <span className="truncate text-xs text-foreground">
-                                    {u.name}
-                                </span>
+                                    aria-hidden
+                                />
+                                <div className="flex flex-1 flex-col overflow-hidden">
+                                    <span className="truncate text-xs text-foreground">
+                                        {u.name}
+                                    </span>
+                                    {isAgent && u.owner?.email && (
+                                        <span className="truncate text-[10px] text-muted-foreground">
+                                            owner: {u.owner.email}
+                                        </span>
+                                    )}
+                                </div>
                                 {isMe && (
-                                    <span className="ml-auto text-[10px] text-muted-foreground">
+                                    <span className="text-[10px] text-muted-foreground">
                                         you
+                                    </span>
+                                )}
+                                {isAgent && (
+                                    <span className="rounded-sm border border-border bg-muted px-1 py-0.5 text-[9px] font-medium tracking-wider text-muted-foreground uppercase">
+                                        Agent
                                     </span>
                                 )}
                             </li>
@@ -1282,6 +1650,15 @@ function PresenceStack({
             </HoverCardContent>
         </HoverCard>
     )
+}
+
+function initialsOf(name: string) {
+    return name
+        .split(" ")
+        .map((part) => part[0])
+        .join("")
+        .slice(0, 2)
+        .toUpperCase()
 }
 
 function RemoteCursors({
