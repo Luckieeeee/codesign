@@ -27,6 +27,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import * as Y from "yjs"
 
 import { ActionToolbar } from "@/components/system-design/action-toolbar"
+import { computeAutoLayout } from "@/components/system-design/auto-layout"
+import { CanvasAgent } from "@/components/system-design/canvas-agent"
 import { ContainerInspector } from "@/components/system-design/container-inspector"
 import { EdgeInspector } from "@/components/system-design/edge-inspector"
 import { FloatingInspector } from "@/components/system-design/floating-inspector"
@@ -36,6 +38,7 @@ import { IconSidebar } from "@/components/system-design/icon-sidebar"
 import { SystemEdge } from "@/components/system-design/labeled-edge"
 import { NodeInspector } from "@/components/system-design/node-inspector"
 import { SystemTextNode } from "@/components/system-design/text-node"
+import { useCanvasAgent } from "@/components/system-design/use-canvas-agent"
 import {
     CONTAINER_GROUP_ID,
     CONTAINER_TEXT_ID,
@@ -761,12 +764,103 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
         setSelection(null)
     }, [])
 
+    // ---- Manual auto-layout (toolbar + ⌘L) ---------------------------------
+
+    /**
+     * Lay out the canvas using dagre. If a subset is selected, only those
+     * nodes are repositioned (existing layout for the rest is preserved);
+     * otherwise the whole graph is laid out around the viewport center.
+     */
+    const runAutoLayout = useCallback(() => {
+        const allNodes: Node[] = []
+        ynodes.forEach((n) => allNodes.push(n))
+        if (allNodes.length === 0) return
+        const allEdges: Edge[] = []
+        yedges.forEach((e) => allEdges.push(e))
+
+        const selected = allNodes.filter((n) => n.selected).map((n) => n.id)
+        const scope = selected.length > 1 ? new Set(selected) : undefined
+
+        let anchor = { x: 0, y: 0 }
+        if (typeof window !== "undefined") {
+            try {
+                anchor = reactFlow.screenToFlowPosition({
+                    x: window.innerWidth / 2,
+                    y: window.innerHeight / 2,
+                })
+            } catch {
+                /* fall back to (0,0) */
+            }
+        }
+
+        const patches = computeAutoLayout(allNodes, allEdges, {
+            direction: "LR",
+            scope,
+            anchor,
+        })
+        if (patches.size === 0) return
+
+        ydoc.transact(() => {
+            for (const [id, patch] of patches) {
+                const current = ynodes.get(id)
+                if (!current) continue
+                const next: Node = {
+                    ...current,
+                    position: patch.position,
+                    ...(patch.width !== undefined ? { width: patch.width } : {}),
+                    ...(patch.height !== undefined
+                        ? { height: patch.height }
+                        : {}),
+                }
+                ynodes.set(id, stripNodeRuntime(next))
+            }
+        }, "auto-layout")
+
+        // Re-fit the viewport so the user can see the result. Defer one
+        // frame so React Flow has a chance to apply the new positions.
+        window.setTimeout(() => {
+            try {
+                reactFlow.fitView({ padding: 0.4, duration: 400 })
+            } catch {
+                /* ignore — fitView occasionally throws if there are no nodes */
+            }
+        }, 0)
+    }, [ydoc, ynodes, yedges, reactFlow])
+
     useFlowKeyboard({
         onUndo: undo,
         onRedo: redo,
         onDuplicate: duplicateSelection,
         onSelectAll: selectAll,
+        onAutoLayout: runAutoLayout,
         onEscape: clearSelection,
+    })
+
+    // ---- AI agent (floating chat) -------------------------------------------
+
+    // Snapshot getters use refs so the agent always sees the latest state at
+    // request time without retriggering its memoised callbacks.
+    const nodesRef = useRef(nodes)
+    const edgesRef = useRef(edges)
+    useEffect(() => {
+        nodesRef.current = nodes
+    }, [nodes])
+    useEffect(() => {
+        edgesRef.current = edges
+    }, [edges])
+
+    const agentApi = useCanvasAgent({
+        ydoc,
+        ynodes: ynodes as Y.Map<Node>,
+        yedges: yedges as Y.Map<Edge>,
+        reactFlow,
+        getNodesSnapshot: useCallback(() => nodesRef.current, []),
+        getEdgesSnapshot: useCallback(() => edgesRef.current, []),
+        getSelectedNodeIds: useCallback(
+            () => nodesRef.current.filter((n) => n.selected).map((n) => n.id),
+            []
+        ),
+        projectName: project.name,
     })
 
     // ---- Awareness pointer tracking -----------------------------------------
@@ -978,6 +1072,15 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
                             canRedo={canRedo}
                             onAddGroup={addGroupAtViewportCenter}
                             onAddText={addTextAtViewportCenter}
+                            onAutoLayout={runAutoLayout}
+                            canAutoLayout={nodes.length > 0}
+                        />
+
+                        <CanvasAgent
+                            getCanvasContext={agentApi.getCanvasContext}
+                            beginSession={agentApi.beginSession}
+                            applyOp={agentApi.applyOp}
+                            finishSession={agentApi.finishSession}
                         />
 
                         {/* Floating inspector — anchored top-right of the

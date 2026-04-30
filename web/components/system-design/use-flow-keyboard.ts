@@ -11,6 +11,8 @@ type Options = {
   onDuplicate?: Handler
   /** Cmd/Ctrl+A — select all on the canvas. */
   onSelectAll?: Handler
+  /** Cmd/Ctrl+L — auto-layout the entire canvas. */
+  onAutoLayout?: Handler
   /** Esc — clear selection / close inspector. */
   onEscape?: Handler
 }
@@ -29,6 +31,7 @@ export function useFlowKeyboard({
   onRedo,
   onDuplicate,
   onSelectAll,
+  onAutoLayout,
   onEscape,
 }: Options) {
   useEffect(() => {
@@ -73,9 +76,14 @@ export function useFlowKeyboard({
         onSelectAll?.(e)
         return
       }
+      if (mod && (e.key === "l" || e.key === "L")) {
+        e.preventDefault()
+        onAutoLayout?.(e)
+        return
+      }
     }
 
     window.addEventListener("keydown", handler)
     return () => window.removeEventListener("keydown", handler)
-  }, [onUndo, onRedo, onDuplicate, onSelectAll, onEscape])
+  }, [onUndo, onRedo, onDuplicate, onSelectAll, onAutoLayout, onEscape])
 }

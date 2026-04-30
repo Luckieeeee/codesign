@@ -9,6 +9,8 @@ type ActionToolbarProps = {
   canRedo: boolean
   onAddGroup: () => void
   onAddText: () => void
+  onAutoLayout: () => void
+  canAutoLayout: boolean
 }
 
 /**
@@ -16,7 +18,7 @@ type ActionToolbarProps = {
  *
  * Inspired by the dialog-tree editor's pill toolbar — rounded buttons,
  * shadow-lg for depth against the canvas, monochrome icons. The action set
- * here is tier-1 only: undo/redo + spawn group / text. Auto-layout, AI,
+ * here is tier-1 only: undo/redo + spawn group / text + auto-layout. AI
  * and other heavy actions can slot in beside these later.
  */
 export function ActionToolbar({
@@ -26,6 +28,8 @@ export function ActionToolbar({
   canRedo,
   onAddGroup,
   onAddText,
+  onAutoLayout,
+  canAutoLayout,
 }: ActionToolbarProps) {
   return (
     <div className="absolute right-6 bottom-6 z-10 flex items-center gap-2">
@@ -41,6 +45,13 @@ export function ActionToolbar({
           onClick={onRedo}
           disabled={!canRedo}
           icon={<RedoGlyph />}
+        />
+        <span className="mx-0.5 h-4 w-px bg-border" aria-hidden />
+        <ToolbarButton
+          label="Auto-layout (⌘L)"
+          onClick={onAutoLayout}
+          disabled={!canAutoLayout}
+          icon={<LayoutGlyph />}
         />
       </div>
 
@@ -174,6 +185,28 @@ function TextGlyph() {
       <path d="M15 5v14" />
       <path d="M7 19h4" />
       <path d="M13 19h4" />
+    </svg>
+  )
+}
+
+function LayoutGlyph() {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {/* Three nodes connected left → middle → right + middle → bottom-right */}
+      <rect x="2" y="9" width="6" height="6" rx="1.5" />
+      <rect x="16" y="3" width="6" height="6" rx="1.5" />
+      <rect x="16" y="15" width="6" height="6" rx="1.5" />
+      <path d="M8 12 L16 6" />
+      <path d="M8 12 L16 18" />
     </svg>
   )
 }
