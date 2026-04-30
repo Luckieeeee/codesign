@@ -1,10 +1,16 @@
 "use client"
 
-import { Handle, NodeResizer, Position, type NodeProps } from "@xyflow/react"
+import { Handle, NodeResizer, type NodeProps } from "@xyflow/react"
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 
 import { cn } from "@/lib/utils"
 
+import {
+  CANVAS_HANDLE_SIDES,
+  SOURCE_HANDLE_IDS,
+  TARGET_HANDLE_IDS,
+  positionForSide,
+} from "./edge-routing"
 import type { SystemGroupData } from "./types"
 
 /**
@@ -71,30 +77,24 @@ function SystemGroupNodeBase({
       />
 
       {/* Side handles, hover-only so they don't clutter when many groups exist. */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        id="group-top-target"
-        className="!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        id="group-bottom-source"
-        className="!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"
-      />
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="group-left-target"
-        className="!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="group-right-source"
-        className="!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"
-      />
+      {CANVAS_HANDLE_SIDES.map((side) => (
+        <Handle
+          key={`target-${side}`}
+          type="target"
+          position={positionForSide(side)}
+          id={TARGET_HANDLE_IDS[side]}
+          className={handleClassName}
+        />
+      ))}
+      {CANVAS_HANDLE_SIDES.map((side) => (
+        <Handle
+          key={`source-${side}`}
+          type="source"
+          position={positionForSide(side)}
+          id={SOURCE_HANDLE_IDS[side]}
+          className={handleClassName}
+        />
+      ))}
 
       {/* Label chip — sits inside the top edge so it doesn't shift with
           children. Double-click to rename. */}
@@ -137,3 +137,6 @@ function SystemGroupNodeBase({
 }
 
 export const SystemGroupNode = memo(SystemGroupNodeBase)
+
+const handleClassName =
+  "!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity group-hover:opacity-100"

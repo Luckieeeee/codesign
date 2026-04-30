@@ -38,9 +38,9 @@ export type LayoutPatch = {
   height?: number
 }
 
-const DEFAULT_NODE_SEP = 60
-const DEFAULT_RANK_SEP = 110
-const DEFAULT_GROUP_PADDING = 36
+const DEFAULT_NODE_SEP = 90
+const DEFAULT_RANK_SEP = 160
+const DEFAULT_GROUP_PADDING = 48
 const GROUP_HEADER_HEIGHT = 24
 
 const ICON_NODE_WIDTH = 112
@@ -83,6 +83,8 @@ function runDagre(
   const g = new dagre.graphlib.Graph({ multigraph: true })
   g.setGraph({
     rankdir: options.direction,
+    acyclicer: "greedy",
+    ranker: "network-simplex",
     nodesep: options.nodeSep,
     ranksep: options.rankSep,
     marginx: 0,

@@ -1,10 +1,16 @@
 "use client"
 
-import { Handle, Position, type NodeProps } from "@xyflow/react"
+import { Handle, type NodeProps } from "@xyflow/react"
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 
 import { cn } from "@/lib/utils"
 
+import {
+  CANVAS_HANDLE_SIDES,
+  SOURCE_HANDLE_IDS,
+  TARGET_HANDLE_IDS,
+  positionForSide,
+} from "./edge-routing"
 import type { SystemNodeData } from "./types"
 
 /**
@@ -69,41 +75,25 @@ function SystemIconNodeBase({
         setIsEditing(true)
       }}
     >
-      {/* Connection handles — invisible by default, hint on hover. */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        className={cn(
-          "!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity",
-          "group-hover:opacity-100"
-        )}
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className={cn(
-          "!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity",
-          "group-hover:opacity-100"
-        )}
-      />
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="left-target"
-        className={cn(
-          "!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity",
-          "group-hover:opacity-100"
-        )}
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="right-source"
-        className={cn(
-          "!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity",
-          "group-hover:opacity-100"
-        )}
-      />
+      {/* Four-sided handles let auto-routing choose the nearest edge ports. */}
+      {CANVAS_HANDLE_SIDES.map((side) => (
+        <Handle
+          key={`target-${side}`}
+          type="target"
+          position={positionForSide(side)}
+          id={TARGET_HANDLE_IDS[side]}
+          className={handleClassName}
+        />
+      ))}
+      {CANVAS_HANDLE_SIDES.map((side) => (
+        <Handle
+          key={`source-${side}`}
+          type="source"
+          position={positionForSide(side)}
+          id={SOURCE_HANDLE_IDS[side]}
+          className={handleClassName}
+        />
+      ))}
 
       <div
         className={cn(
@@ -154,3 +144,8 @@ function SystemIconNodeBase({
 // Memoised — React Flow re-renders every node on most changes; the icon tree
 // is heavy enough to want this.
 export const SystemIconNode = memo(SystemIconNodeBase)
+
+const handleClassName = cn(
+  "!h-2 !w-2 !border-background !bg-foreground/40 opacity-0 transition-opacity",
+  "group-hover:opacity-100"
+)

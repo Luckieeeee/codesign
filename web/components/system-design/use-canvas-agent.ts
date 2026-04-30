@@ -12,6 +12,7 @@ import type {
 } from "@/lib/canvas-ai/types"
 
 import { computeAutoLayout } from "./auto-layout"
+import { routeEdges } from "./edge-routing"
 import {
   GROUP_DEFAULT_SIZE,
   SYSTEM_EDGE_TYPE,
@@ -410,7 +411,12 @@ export function useCanvasAgent({
             markerEnd: { ...EDGE_MARKER_END },
             data,
           }
-          ydoc.transact(() => yedges.set(realId, edge), "agent")
+          const nodes: Node[] = []
+          ynodes.forEach((node) => nodes.push(node))
+          const [routedEdge] = routeEdges([edge], nodes, {
+            rerouteHandles: false,
+          })
+          ydoc.transact(() => yedges.set(realId, routedEdge), "agent")
           return
         }
 
@@ -537,17 +543,24 @@ export function useCanvasAgent({
     })
     if (patches.size === 0) return
 
+    const nextNodes = allNodes.map((node) => {
+      const patch = patches.get(node.id)
+      if (!patch) return node
+      return {
+        ...node,
+        position: patch.position,
+        ...(patch.width !== undefined ? { width: patch.width } : {}),
+        ...(patch.height !== undefined ? { height: patch.height } : {}),
+      }
+    })
+    const nextEdges = routeEdges(allEdges, nextNodes, { rerouteHandles: true })
+
     ydoc.transact(() => {
-      for (const [id, patch] of patches) {
-        const current = ynodes.get(id)
-        if (!current) continue
-        const next: Node = {
-          ...current,
-          position: patch.position,
-          ...(patch.width !== undefined ? { width: patch.width } : {}),
-          ...(patch.height !== undefined ? { height: patch.height } : {}),
-        }
-        ynodes.set(id, next)
+      for (const node of nextNodes) {
+        if (patches.has(node.id)) ynodes.set(node.id, node)
+      }
+      for (const edge of nextEdges) {
+        yedges.set(edge.id, edge)
       }
     }, "agent-layout")
   }, [ydoc, ynodes, yedges, ensureLayoutAnchor])

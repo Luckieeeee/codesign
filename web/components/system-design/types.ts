@@ -83,6 +83,12 @@ export type SystemEdgeData = {
   request?: string
   /** Response payload shape (raw text). */
   response?: string
+  /** Internal canvas hint used to keep neighboring edge labels from stacking. */
+  _labelOffset?: { x: number; y: number }
+  /** Internal canvas route used to detour long edges around intermediate nodes. */
+  _routePoints?: { x: number; y: number }[]
+  /** Internal canvas label anchor for routed edges. */
+  _routeLabel?: { x: number; y: number }
   [key: string]: unknown
 }
 

@@ -1,5 +1,13 @@
 "use client"
 
+import {
+  AlignHorizontalSpaceAround,
+  Group,
+  Redo2,
+  Type,
+  Undo2,
+} from "lucide-react"
+
 import { cn } from "@/lib/utils"
 
 type ActionToolbarProps = {
@@ -38,20 +46,20 @@ export function ActionToolbar({
           label="Undo (⌘Z)"
           onClick={onUndo}
           disabled={!canUndo}
-          icon={<UndoGlyph />}
+          icon={<Undo2 className="size-3.5" />}
         />
         <ToolbarButton
           label="Redo (⌘⇧Z)"
           onClick={onRedo}
           disabled={!canRedo}
-          icon={<RedoGlyph />}
+          icon={<Redo2 className="size-3.5" />}
         />
         <span className="mx-0.5 h-4 w-px bg-border" aria-hidden />
         <ToolbarButton
           label="Auto-layout (⌘L)"
           onClick={onAutoLayout}
           disabled={!canAutoLayout}
-          icon={<LayoutGlyph />}
+          icon={<AlignHorizontalSpaceAround className="size-3.5" />}
         />
       </div>
 
@@ -60,7 +68,7 @@ export function ActionToolbar({
         title="Add note"
         className="flex items-center gap-1.5 rounded-full border border-border/60 bg-card px-3.5 py-2 text-sm font-medium text-foreground shadow-lg transition-colors hover:bg-muted"
       >
-        <TextGlyph />
+        <Type className="size-3.5" />
         Note
       </button>
 
@@ -69,7 +77,7 @@ export function ActionToolbar({
         title="Add group"
         className="flex items-center gap-1.5 rounded-full bg-foreground px-3.5 py-2 text-sm font-medium text-background shadow-lg transition-colors hover:bg-foreground/90"
       >
-        <GroupGlyph />
+        <Group className="size-3.5" />
         Group
       </button>
     </div>
@@ -103,110 +111,5 @@ function ToolbarButton({
     >
       {icon}
     </button>
-  )
-}
-
-function UndoGlyph() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M3 7v6h6" />
-      <path d="M3 13a9 9 0 1 0 3-7.7L3 8" />
-    </svg>
-  )
-}
-
-function RedoGlyph() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M21 7v6h-6" />
-      <path d="M21 13a9 9 0 1 1-3-7.7L21 8" />
-    </svg>
-  )
-}
-
-function GroupGlyph() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect
-        x="3"
-        y="3"
-        width="18"
-        height="18"
-        rx="2"
-        strokeDasharray="3 3"
-      />
-      <rect x="7" y="7" width="4" height="4" rx="1" />
-      <rect x="13" y="13" width="4" height="4" rx="1" />
-    </svg>
-  )
-}
-
-function TextGlyph() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M4 7V5h16v2" />
-      <path d="M9 5v14" />
-      <path d="M15 5v14" />
-      <path d="M7 19h4" />
-      <path d="M13 19h4" />
-    </svg>
-  )
-}
-
-function LayoutGlyph() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {/* Three nodes connected left → middle → right + middle → bottom-right */}
-      <rect x="2" y="9" width="6" height="6" rx="1.5" />
-      <rect x="16" y="3" width="6" height="6" rx="1.5" />
-      <rect x="16" y="15" width="6" height="6" rx="1.5" />
-      <path d="M8 12 L16 6" />
-      <path d="M8 12 L16 18" />
-    </svg>
   )
 }

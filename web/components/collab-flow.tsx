@@ -30,6 +30,7 @@ import { ActionToolbar } from "@/components/system-design/action-toolbar"
 import { computeAutoLayout } from "@/components/system-design/auto-layout"
 import { CanvasAgent } from "@/components/system-design/canvas-agent"
 import { ContainerInspector } from "@/components/system-design/container-inspector"
+import { routeEdges } from "@/components/system-design/edge-routing"
 import { EdgeInspector } from "@/components/system-design/edge-inspector"
 import { FloatingInspector } from "@/components/system-design/floating-inspector"
 import { SystemGroupNode } from "@/components/system-design/group-node"
@@ -384,6 +385,10 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
             })),
         [nodes, stableNodeUpdate]
     )
+    const edgesForFlow = useMemo(
+        () => routeEdges(edges, nodes, { rerouteHandles: false }),
+        [edges, nodes]
+    )
 
     // ---- React Flow change handlers -----------------------------------------
 
@@ -473,13 +478,14 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
 
     const onConnect = useCallback(
         (connection: Connection) => {
-            const newEdge: Edge = {
+            const edge: Edge = {
                 ...connection,
                 id: `e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
                 type: SYSTEM_EDGE_TYPE,
                 markerEnd: { ...EDGE_MARKER_END },
                 data: {} satisfies SystemEdgeData,
             }
+            const [newEdge] = routeEdges([edge], nodes, { rerouteHandles: false })
             const next = addEdge(newEdge, edges)
             setEdges(next)
             ydoc.transact(() => {
@@ -489,7 +495,7 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
             }, "local")
             setSelection({ kind: "edge", id: newEdge.id })
         },
-        [edges, ydoc, yedges]
+        [edges, nodes, ydoc, yedges]
     )
 
     const onSelectionChange = useCallback(
@@ -800,19 +806,28 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
         })
         if (patches.size === 0) return
 
+        const nextNodes = allNodes.map((node) => {
+            const patch = patches.get(node.id)
+            if (!patch) return node
+            return {
+                ...node,
+                position: patch.position,
+                ...(patch.width !== undefined ? { width: patch.width } : {}),
+                ...(patch.height !== undefined
+                    ? { height: patch.height }
+                    : {}),
+            }
+        })
+        const nextEdges = routeEdges(allEdges, nextNodes, { rerouteHandles: true })
+
         ydoc.transact(() => {
-            for (const [id, patch] of patches) {
-                const current = ynodes.get(id)
-                if (!current) continue
-                const next: Node = {
-                    ...current,
-                    position: patch.position,
-                    ...(patch.width !== undefined ? { width: patch.width } : {}),
-                    ...(patch.height !== undefined
-                        ? { height: patch.height }
-                        : {}),
+            for (const node of nextNodes) {
+                if (patches.has(node.id)) {
+                    ynodes.set(node.id, stripNodeRuntime(node))
                 }
-                ynodes.set(id, stripNodeRuntime(next))
+            }
+            for (const edge of nextEdges) {
+                yedges.set(edge.id, stripEdgeRuntime(edge))
             }
         }, "auto-layout")
 
@@ -969,7 +984,7 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
                     >
                         <ReactFlow
                             nodes={nodesForFlow}
-                            edges={edges}
+                            edges={edgesForFlow}
                             nodeTypes={NODE_TYPES}
                             edgeTypes={EDGE_TYPES}
                             onNodesChange={onNodesChange}

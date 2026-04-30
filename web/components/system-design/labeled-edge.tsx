@@ -3,7 +3,7 @@
 import {
   BaseEdge,
   EdgeLabelRenderer,
-  getSmoothStepPath,
+  getBezierPath,
   type EdgeProps,
 } from "@xyflow/react"
 import { memo } from "react"
@@ -37,20 +37,32 @@ function SystemEdgeBase({
   style,
   markerEnd,
 }: EdgeProps & { data?: SystemEdgeData }) {
-  const [edgePath, labelX, labelY] = getSmoothStepPath({
+  const routePoints = data?._routePoints ?? []
+  const routeLabel = data?._routeLabel
+  const [bezierPath, bezierLabelX, bezierLabelY] = getBezierPath({
     sourceX,
     sourceY,
     targetX,
     targetY,
     sourcePosition,
     targetPosition,
-    borderRadius: 12,
+    curvature: 0.28,
   })
+  const routedPoints = [
+    { x: sourceX, y: sourceY },
+    ...routePoints,
+    { x: targetX, y: targetY },
+  ]
+  const edgePath =
+    routePoints.length > 0 ? buildRoundedOrthogonalPath(routedPoints) : bezierPath
+  const labelX = routeLabel?.x ?? bezierLabelX
+  const labelY = routeLabel?.y ?? bezierLabelY
 
   const method = data?.method
   const label = data?.label
   const endpoint = data?.endpoint
   const hasMeta = Boolean(label || method || endpoint)
+  const labelOffset = data?._labelOffset ?? { x: 0, y: 0 }
 
   return (
     <>
@@ -67,16 +79,16 @@ function SystemEdgeBase({
       />
       <EdgeLabelRenderer>
         <div
-          className="nodrag nopan absolute"
+          className="nodrag nopan absolute z-10"
           style={{
-            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
-            pointerEvents: "all",
+            transform: `translate(-50%, -50%) translate(${labelX + labelOffset.x}px, ${labelY + labelOffset.y}px)`,
+            pointerEvents: "none",
           }}
         >
           {hasMeta ? (
             <div
               className={cn(
-                "flex items-center gap-1 rounded-full border bg-background/95 px-2 py-0.5 text-[10px] font-medium shadow-sm backdrop-blur-sm transition-colors",
+                "flex max-w-[16rem] items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-[10px] font-medium shadow-md ring-2 ring-background transition-colors",
                 selected
                   ? "border-foreground/40 text-foreground"
                   : "border-border text-foreground/80 hover:border-foreground/30"
@@ -103,7 +115,7 @@ function SystemEdgeBase({
           ) : (
             <div
               className={cn(
-                "rounded-full border border-dashed border-border bg-background/80 px-1.5 py-0.5 text-[10px] text-muted-foreground transition-opacity",
+                "rounded-full border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground shadow-sm ring-2 ring-background transition-opacity",
                 selected ? "opacity-100" : "opacity-0 hover:opacity-100"
               )}
             >
@@ -117,6 +129,53 @@ function SystemEdgeBase({
 }
 
 export const SystemEdge = memo(SystemEdgeBase)
+
+function buildRoundedOrthogonalPath(points: { x: number; y: number }[]): string {
+  if (points.length === 0) return ""
+  if (points.length === 1) return `M ${points[0].x},${points[0].y}`
+
+  const compact = points.filter(
+    (point, index) =>
+      index === 0 ||
+      point.x !== points[index - 1].x ||
+      point.y !== points[index - 1].y,
+  )
+
+  let path = `M ${compact[0].x},${compact[0].y}`
+  const radius = 14
+
+  for (let i = 1; i < compact.length; i += 1) {
+    const current = compact[i]
+    const next = compact[i + 1]
+    if (!next) {
+      path += ` L ${current.x},${current.y}`
+      continue
+    }
+
+    const prev = compact[i - 1]
+    const prevLength = Math.hypot(current.x - prev.x, current.y - prev.y)
+    const nextLength = Math.hypot(next.x - current.x, next.y - current.y)
+    const r = Math.min(radius, prevLength / 2, nextLength / 2)
+
+    if (r <= 0) {
+      path += ` L ${current.x},${current.y}`
+      continue
+    }
+
+    const before = {
+      x: current.x - ((current.x - prev.x) / prevLength) * r,
+      y: current.y - ((current.y - prev.y) / prevLength) * r,
+    }
+    const after = {
+      x: current.x + ((next.x - current.x) / nextLength) * r,
+      y: current.y + ((next.y - current.y) / nextLength) * r,
+    }
+
+    path += ` L ${before.x},${before.y} Q ${current.x},${current.y} ${after.x},${after.y}`
+  }
+
+  return path
+}
 
 /**
  * Method-coloured chip. Tailwind palette but kept neutral on light/dark —

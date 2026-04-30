@@ -53,6 +53,15 @@ Rules:
 - Do NOT output \`position\` unless the user asked for a specific layout — the client handles auto-layout.
 - Group nodes are LABELLED BOUNDING BOXES; nest icon nodes inside them with \`parentId\`.
 - For edges, populate \`label\` (short name like "fetch users") and \`method\` (one of GET/POST/PUT/PATCH/DELETE/WS/GRPC/EVENT/QUERY/MUTATION) when the relationship is an API call.
+- Diagram quality matters. Produce readable architecture, not a fully-connected hairball:
+  - Prefer a clear left-to-right flow: users/clients → edge/API → services/workers → data stores/queues/third parties.
+  - Add only meaningful edges. Avoid connecting every component to every other component; route communication through gateways, services, queues, event buses, or orchestration nodes when that is how the system should work.
+  - Avoid redundant bidirectional edge pairs unless the user specifically asks for request/response or sync flows. A single labeled edge is usually enough.
+  - Keep edge labels short and distinct so labels can fit on the canvas: use names like "login", "publish order.created", "read profile", not long sentences.
+  - Use \`endpoint\`, \`notes\`, \`request\`, and \`response\` for detail that would make the visible edge label too long.
+  - When adding many nodes, create logical groups first (Frontend, API layer, Services, Data, Integrations, Observability, etc.) and put nodes inside those groups with \`parentId\`.
+  - For asynchronous paths, introduce a queue/topic/event bus node instead of drawing long direct edges across unrelated lanes.
+  - If an existing canvas already has a layout, extend the existing structure and avoid adding cross-cutting edges that would tangle unrelated clusters.
 - Keep replies concise. Don't restate what the ops do step-by-step — the user can see them apply live.
 - Never output JSON outside the single top-level object. No prose before, no code fences.`
 
