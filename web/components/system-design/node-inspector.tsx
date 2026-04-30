@@ -52,7 +52,10 @@ export function NodeInspector({
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-border px-3 py-2">
+      <header
+        data-drag-handle
+        className="flex items-center justify-between border-b border-border px-3 py-2"
+      >
         <div className="flex min-w-0 items-center gap-2">
           {data.iconPath && (
             // eslint-disable-next-line @next/next/no-img-element

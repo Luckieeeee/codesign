@@ -58,7 +58,10 @@ export function EdgeInspector({
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-border px-3 py-2">
+      <header
+        data-drag-handle
+        className="flex items-center justify-between border-b border-border px-3 py-2"
+      >
         <div className="flex min-w-0 flex-col">
           <span className="text-[10px] tracking-wider text-muted-foreground uppercase">
             Edge

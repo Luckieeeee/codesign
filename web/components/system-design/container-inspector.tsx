@@ -75,7 +75,10 @@ function GroupInner({
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-border px-3 py-2">
+      <header
+        data-drag-handle
+        className="flex items-center justify-between border-b border-border px-3 py-2"
+      >
         <div className="flex flex-col">
           <span className="text-[10px] tracking-wider text-muted-foreground uppercase">
             Container · Group
@@ -150,7 +153,10 @@ function TextInner({
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex items-center justify-between border-b border-border px-3 py-2">
+      <header
+        data-drag-handle
+        className="flex items-center justify-between border-b border-border px-3 py-2"
+      >
         <div className="flex flex-col">
           <span className="text-[10px] tracking-wider text-muted-foreground uppercase">
             Container · Text

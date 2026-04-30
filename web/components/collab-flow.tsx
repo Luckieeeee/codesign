@@ -29,6 +29,7 @@ import * as Y from "yjs"
 import { ActionToolbar } from "@/components/system-design/action-toolbar"
 import { ContainerInspector } from "@/components/system-design/container-inspector"
 import { EdgeInspector } from "@/components/system-design/edge-inspector"
+import { FloatingInspector } from "@/components/system-design/floating-inspector"
 import { SystemGroupNode } from "@/components/system-design/group-node"
 import { SystemIconNode } from "@/components/system-design/icon-node"
 import { IconSidebar } from "@/components/system-design/icon-sidebar"
@@ -390,8 +391,17 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
 
             if (applyingRemote.current) return
 
+            // Selection / dimension changes are presentation-only — they
+            // don't belong in the shared document. Without this filter,
+            // clicking a node would broadcast `selected: true` to every
+            // other client and pop their inspector open too.
+            const persistable = changes.filter(
+                (c) => c.type !== "select" && c.type !== "dimensions"
+            )
+            if (persistable.length === 0) return
+
             ydoc.transact(() => {
-                for (const change of changes) {
+                for (const change of persistable) {
                     if (change.type === "remove") {
                         ynodes.delete(change.id)
                         const drop: string[] = []
@@ -433,21 +443,25 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
 
             if (applyingRemote.current) return
 
+            // Same rationale as onNodesChange — selection is local-only.
+            const persistable = changes.filter((c) => c.type !== "select")
+            if (persistable.length === 0) return
+
             ydoc.transact(() => {
-                for (const change of changes) {
+                for (const change of persistable) {
                     if (change.type === "remove") {
                         yedges.delete(change.id)
                         continue
                     }
                     if (change.type === "add") {
-                        yedges.set(change.item.id, change.item)
+                        yedges.set(change.item.id, stripEdgeRuntime(change.item))
                         continue
                     }
                     const id =
                         "id" in change && typeof change.id === "string" ? change.id : null
                     if (!id) continue
                     const merged = next.find((e) => e.id === id)
-                    if (merged) yedges.set(id, merged)
+                    if (merged) yedges.set(id, stripEdgeRuntime(merged))
                 }
             }, "local")
         },
@@ -848,8 +862,9 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
 
                 <ResizableHandle />
 
-                {/* Canvas — takes whatever's left. */}
-                <ResizablePanel id="canvas" defaultSize={inspector ? "60%" : "82%"}>
+                {/* Canvas — takes whatever's left of the icon library panel.
+                    The inspector floats above this panel, not beside it. */}
+                <ResizablePanel id="canvas" defaultSize="82%">
                     <div
                         ref={canvasRef}
                         className="relative h-full w-full"
@@ -867,14 +882,14 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
                             onEdgesChange={onEdgesChange}
                             onConnect={onConnect}
                             onSelectionChange={onSelectionChange}
-                            // Match inspo: loose connection mode (handles snap to either
-                            // side), explicit modifier keys for additive selection, and
-                            // lasso-on-drag so users can drag-rectangle without holding
-                            // Shift first.
+                            // Drag-to-pan by default. Hold Shift to lasso-select
+                            // (or middle-click drag, which is also still pan).
+                            // Meta / Shift / Control act as additive-select
+                            // modifiers when clicking individual nodes.
                             connectionMode={ConnectionMode.Loose}
                             multiSelectionKeyCode={["Meta", "Shift", "Control"]}
-                            selectionOnDrag
-                            panOnDrag={[1, 2]}
+                            selectionKeyCode="Shift"
+                            panOnDrag
                             deleteKeyCode={["Backspace", "Delete"]}
                             defaultEdgeOptions={{
                                 type: SYSTEM_EDGE_TYPE,
@@ -965,27 +980,22 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
                             onAddText={addTextAtViewportCenter}
                         />
 
+                        {/* Floating inspector — anchored top-right of the
+                            canvas, draggable by its header. Mounted only
+                            when something is selected; the panelKey reset
+                            drops it back to its anchor on each new selection
+                            so it can't get lost. */}
+                        {inspector && selection && (
+                            <FloatingInspector
+                                panelKey={`${selection.kind}:${selection.id}`}
+                            >
+                                {inspector}
+                            </FloatingInspector>
+                        )}
+
                         <RemoteCursors collaborators={collaborators} />
                     </div>
                 </ResizablePanel>
-
-                {/* Right rail: inspector — only mounted when something is selected.
-            react-resizable-panels handles the disappearing panel by
-            redistributing space; the canvas panel above grows naturally. */}
-                {inspector && (
-                    <>
-                        <ResizableHandle />
-                        <ResizablePanel
-                            id="inspector"
-                            defaultSize="22%"
-                            minSize="16%"
-                            maxSize="36%"
-                            className="border-l border-border bg-background"
-                        >
-                            {inspector}
-                        </ResizablePanel>
-                    </>
-                )}
             </ResizablePanelGroup>
         </div>
     )
@@ -1036,16 +1046,34 @@ function findGroupAtPosition(
 }
 
 /**
- * Strip non-serialisable runtime fields (handler functions) from a node
- * before storing it in Yjs. Yjs maps require JSON-friendly values.
+ * Strip per-client UI state (selection, dragging, resizing) and runtime
+ * handler functions from a node before storing it in Yjs.
+ *
+ * Yjs maps require JSON-friendly values, and these flags are inherently
+ * local — broadcasting `selected: true` would pop the inspector for every
+ * collaborator the moment one user clicked a node.
  */
 function stripNodeRuntime(node: Node): Node {
-    if (!node.data || typeof node.data !== "object") return node
-    const data = node.data as Record<string, unknown>
-    if (typeof data.onUpdate !== "function") return node
-    const { onUpdate: _drop, ...rest } = data
-    void _drop
-    return { ...node, data: rest }
+    const cleaned: Node = { ...node }
+    delete (cleaned as { selected?: boolean }).selected
+    delete (cleaned as { dragging?: boolean }).dragging
+    delete (cleaned as { resizing?: boolean }).resizing
+    if (cleaned.data && typeof cleaned.data === "object") {
+        const data = cleaned.data as Record<string, unknown>
+        if (typeof data.onUpdate === "function") {
+            const { onUpdate: _drop, ...rest } = data
+            void _drop
+            cleaned.data = rest
+        }
+    }
+    return cleaned
+}
+
+/** Same idea for edges — selection state is per-client only. */
+function stripEdgeRuntime(edge: Edge): Edge {
+    const cleaned: Edge = { ...edge }
+    delete (cleaned as { selected?: boolean }).selected
+    return cleaned
 }
 
 function PresenceStack({
