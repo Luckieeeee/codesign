@@ -59,6 +59,11 @@ import { useFlowKeyboard } from "@/components/system-design/use-flow-keyboard"
 import { useYjsUndo } from "@/components/system-design/use-yjs-undo"
 import { Button } from "@/components/ui/button"
 import {
+    HoverCard,
+    HoverCardContent,
+    HoverCardTrigger,
+} from "@/components/ui/hover-card"
+import {
     ResizableHandle,
     ResizablePanel,
     ResizablePanelGroup,
@@ -1205,29 +1210,77 @@ function PresenceStack({
         { id: -1, name: me.name, color: me.color, isMe: true },
         ...others,
     ]
+    const visible = all.slice(0, 5)
+    const overflowCount = all.length - visible.length
     return (
-        <div className="flex -space-x-2">
-            {all.slice(0, 5).map((u) => (
-                <div
-                    key={u.id}
-                    title={`${u.name}${"isMe" in u && u.isMe ? " (you)" : ""}`}
-                    className="flex size-6 items-center justify-center rounded-full border-2 border-background text-[10px] font-semibold text-white"
-                    style={{ backgroundColor: u.color }}
-                >
-                    {u.name
-                        .split(" ")
-                        .map((part) => part[0])
-                        .join("")
-                        .slice(0, 2)
-                        .toUpperCase()}
+        <HoverCard>
+            <HoverCardTrigger
+                render={
+                    <div
+                        className="flex -space-x-2"
+                        aria-label={`${all.length} ${all.length === 1 ? "person" : "people"} on this canvas`}
+                    />
+                }
+            >
+                {visible.map((u) => (
+                    <div
+                        key={u.id}
+                        className="flex size-6 items-center justify-center rounded-full border-2 border-background text-[10px] font-semibold text-white"
+                        style={{ backgroundColor: u.color }}
+                    >
+                        {u.name
+                            .split(" ")
+                            .map((part) => part[0])
+                            .join("")
+                            .slice(0, 2)
+                            .toUpperCase()}
+                    </div>
+                ))}
+                {overflowCount > 0 && (
+                    <div className="flex size-6 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px] font-semibold">
+                        +{overflowCount}
+                    </div>
+                )}
+            </HoverCardTrigger>
+            <HoverCardContent align="end" className="w-56 p-1.5">
+                <div className="px-2 py-1 text-[11px] font-medium text-muted-foreground">
+                    {all.length === 1
+                        ? "1 person here"
+                        : `${all.length} people here`}
                 </div>
-            ))}
-            {all.length > 5 && (
-                <div className="flex size-6 items-center justify-center rounded-full border-2 border-background bg-muted text-[10px] font-semibold">
-                    +{all.length - 5}
-                </div>
-            )}
-        </div>
+                <ul className="flex flex-col">
+                    {all.map((u) => {
+                        const isMe = "isMe" in u && u.isMe
+                        return (
+                            <li
+                                key={u.id}
+                                className="flex items-center gap-2 rounded-md px-2 py-1.5"
+                            >
+                                <span
+                                    className="flex size-5 shrink-0 items-center justify-center rounded-full text-[9px] font-semibold text-white"
+                                    style={{ backgroundColor: u.color }}
+                                >
+                                    {u.name
+                                        .split(" ")
+                                        .map((part) => part[0])
+                                        .join("")
+                                        .slice(0, 2)
+                                        .toUpperCase()}
+                                </span>
+                                <span className="truncate text-xs text-foreground">
+                                    {u.name}
+                                </span>
+                                {isMe && (
+                                    <span className="ml-auto text-[10px] text-muted-foreground">
+                                        you
+                                    </span>
+                                )}
+                            </li>
+                        )
+                    })}
+                </ul>
+            </HoverCardContent>
+        </HoverCard>
     )
 }
 

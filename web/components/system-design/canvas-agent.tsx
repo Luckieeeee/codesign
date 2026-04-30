@@ -128,8 +128,8 @@ export function CanvasAgent({
   ) {
     setHasInitPosition(true)
     setPosition({
-      x: window.innerWidth - PANEL_WIDTH - MARGIN,
-      y: window.innerHeight - PANEL_HEIGHT - MARGIN,
+      x: Math.max(MARGIN, (window.innerWidth - PANEL_WIDTH) / 2),
+      y: Math.max(MARGIN, (window.innerHeight - PANEL_HEIGHT) / 2),
     })
   }
 
