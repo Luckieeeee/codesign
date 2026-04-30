@@ -341,14 +341,14 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
 
         const onNodesObserve = () => {
             applyingRemote.current = true
-            setNodes(snapshotNodes())
+            setNodes((prev) => mergeNodeRuntime(prev, snapshotNodes()))
             queueMicrotask(() => {
                 applyingRemote.current = false
             })
         }
         const onEdgesObserve = () => {
             applyingRemote.current = true
-            setEdges(snapshotEdges())
+            setEdges((prev) => mergeEdgeRuntime(prev, snapshotEdges()))
             queueMicrotask(() => {
                 applyingRemote.current = false
             })
@@ -358,8 +358,10 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
         yedges.observeDeep(onEdgesObserve)
 
         queueMicrotask(() => {
-            if (ynodes.size > 0) setNodes(snapshotNodes())
-            if (yedges.size > 0) setEdges(snapshotEdges())
+            if (ynodes.size > 0)
+                setNodes((prev) => mergeNodeRuntime(prev, snapshotNodes()))
+            if (yedges.size > 0)
+                setEdges((prev) => mergeEdgeRuntime(prev, snapshotEdges()))
         })
 
         const onAwarenessChange = () => {
@@ -1482,6 +1484,43 @@ function stripEdgeRuntime(edge: Edge): Edge {
     const cleaned: Edge = { ...edge }
     delete (cleaned as { selected?: boolean }).selected
     return cleaned
+}
+
+/**
+ * Re-attach local UI state (`selected` / `dragging` / `resizing`) from the
+ * previous snapshot when applying a fresh one from Yjs.
+ *
+ * Without this, every `ynodes.set` round-trip — including ones triggered by
+ * the user's own inspector edits — would wipe `selected: true` from local
+ * state, causing React Flow to fire `onSelectionChange` with empty arrays
+ * and unmounting the inspector mid-edit (e.g. on the first input's blur as
+ * the user clicks the next field).
+ */
+function mergeNodeRuntime(prev: Node[], next: Node[]): Node[] {
+    if (prev.length === 0) return next
+    const prevById = new Map(prev.map((n) => [n.id, n]))
+    return next.map((n) => {
+        const before = prevById.get(n.id)
+        if (!before) return n
+        const merged: Node = { ...n }
+        if (before.selected) merged.selected = true
+        if (before.dragging) merged.dragging = true
+        if ((before as { resizing?: boolean }).resizing) {
+            ;(merged as { resizing?: boolean }).resizing = true
+        }
+        return merged
+    })
+}
+
+/** Edges only carry local `selected` state — same rationale as above. */
+function mergeEdgeRuntime(prev: Edge[], next: Edge[]): Edge[] {
+    if (prev.length === 0) return next
+    const prevById = new Map(prev.map((e) => [e.id, e]))
+    return next.map((e) => {
+        const before = prevById.get(e.id)
+        if (!before) return e
+        return before.selected ? { ...e, selected: true } : e
+    })
 }
 
 function PresenceStack({
