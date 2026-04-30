@@ -141,6 +141,7 @@ const hocuspocus = new Hocuspocus({
   extensions: [
     new Database({
       fetch: async ({ documentName }) => {
+        console.log(`[collab-server] fetch document: "${documentName}"`)
         const { data, error } = await supabase
           .from("project_documents")
           .select("state_b64")
@@ -150,10 +151,20 @@ const hocuspocus = new Hocuspocus({
           console.error(`[collab-server] fetch ${documentName} failed:`, error)
           return null
         }
-        if (!data?.state_b64) return null
-        return new Uint8Array(Buffer.from(data.state_b64, "base64"))
+        if (!data?.state_b64) {
+          console.log(`[collab-server] fetch ${documentName}: no prior state`)
+          return null
+        }
+        const bytes = new Uint8Array(Buffer.from(data.state_b64, "base64"))
+        console.log(
+          `[collab-server] fetch ${documentName}: ${bytes.length} bytes`,
+        )
+        return bytes
       },
       store: async ({ documentName, state }) => {
+        console.log(
+          `[collab-server] store ${documentName}: ${state.length} bytes`,
+        )
         // The project row may not exist yet if a client raced ahead of the
         // POST /api/projects round trip. Ensure it exists so the FK holds.
         await supabase
@@ -172,6 +183,19 @@ const hocuspocus = new Hocuspocus({
         }
       },
     }),
+    {
+      // Inline extension just for connection logging.
+      onConnect: async ({ documentName }) => {
+        console.log(`[collab-server] onConnect: "${documentName}"`)
+      },
+      onDisconnect: async ({ documentName }) => {
+        console.log(`[collab-server] onDisconnect: "${documentName}"`)
+      },
+      onLoadDocument: async ({ documentName }) => {
+        console.log(`[collab-server] onLoadDocument: "${documentName}"`)
+        return undefined
+      },
+    },
   ],
 })
 
@@ -267,11 +291,30 @@ httpServer.on("upgrade", (req, socket, head) => {
     // Hocuspocus types `request` as a Fetch Request, but at runtime it only
     // touches `.url` and `.headers`, both of which Node's IncomingMessage
     // already provides. Cast for TS, the duck typing works.
-    hocuspocus.handleConnection(ws, req as unknown as Request)
+    const clientConnection = hocuspocus.handleConnection(
+      ws,
+      req as unknown as Request,
+    )
+    ws.binaryType = "arraybuffer"
+    ws.on("message", (data: ArrayBuffer | Buffer | Buffer[]) => {
+      let bytes: Uint8Array
+      if (data instanceof ArrayBuffer) bytes = new Uint8Array(data)
+      else if (Array.isArray(data)) bytes = new Uint8Array(Buffer.concat(data))
+      else bytes = new Uint8Array(data)
+      clientConnection.handleMessage(bytes)
+    })
+    ws.on("close", (code, reason) => {
+      clientConnection.handleClose({
+        code,
+        reason: reason?.toString() ?? "",
+      } as never)
+    })
+    ws.on("error", (err) => {
+      console.warn(`[collab-server] ws error:`, err.message)
+    })
   })
 })
 
-// ---- Lifecycle ---------------------------------------------------------------
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`[collab-server] listening on ws://${HOST}:${PORT}`)
