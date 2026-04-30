@@ -1,0 +1,19 @@
+# Standard ignores — keeps secrets out of the build context and prevents
+# the local node_modules / .next build cache from being uploaded.
+# The Dockerfile itself only COPYs package.json, bun.lock, tsconfig.json,
+# and scripts/, so the rest of the repo never lands in the image regardless.
+node_modules
+.next
+.git
+.gitignore
+.env
+.env.*
+.vercel
+*.log
+npm-debug.log*
+.DS_Store
+coverage
+tsconfig.tsbuildinfo
+.eslintcache
+Dockerfile
+.dockerignore
