@@ -51,8 +51,7 @@ function assert(cond: unknown, msg: string): asserts cond {
 async function main() {
   const hp = new Hocuspocus({
     name: "spike",
-    // No `port` — we never call .listen(); the spike drives the server purely
-    // via openDirectConnection().
+    port: 0, // never actually .listen() — we drive it via openDirectConnection
     extensions: [
       new Database({
         fetch: async () => null,
