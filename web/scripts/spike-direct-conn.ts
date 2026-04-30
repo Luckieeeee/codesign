@@ -51,7 +51,6 @@ function assert(cond: unknown, msg: string): asserts cond {
 async function main() {
   const hp = new Hocuspocus({
     name: "spike",
-    port: 0, // never actually .listen() — we drive it via openDirectConnection
     extensions: [
       new Database({
         fetch: async () => null,
@@ -69,6 +68,7 @@ async function main() {
   // (2) sibling connection sees writes from the first
   const conn2 = await hp.openDirectConnection("doc-spike", {})
   assert(conn2, "second openDirectConnection returned a value")
+  assert(conn2.document instanceof Y.Doc, "conn2.document is a Y.Doc")
 
   const rev0 = computeRevision(conn1.document)
   console.log(`  initial rev: ${rev0}`)
