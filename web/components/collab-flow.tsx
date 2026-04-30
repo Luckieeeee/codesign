@@ -19,11 +19,13 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react"
+import Link from "next/link"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { WebsocketProvider } from "y-websocket"
+import { HocuspocusProvider } from "@hocuspocus/provider"
 import * as Y from "yjs"
 
 import { Button } from "@/components/ui/button"
+import type { Project } from "@/lib/projects"
 import { cn } from "@/lib/utils"
 
 type CollaboratorPresence = {
@@ -31,6 +33,17 @@ type CollaboratorPresence = {
   name: string
   color: string
   cursor: { x: number; y: number } | null
+}
+
+export type CollabUser = {
+  id: string
+  name: string
+  email: string
+}
+
+type CollabFlowProps = {
+  project: Project
+  user: CollabUser
 }
 
 const FLOW_NODES_KEY = "flow:nodes"
@@ -72,64 +85,15 @@ const PRESENCE_COLORS = [
   "#ec4899",
 ] as const
 
-const ANIMALS = [
-  "Otter",
-  "Fox",
-  "Panda",
-  "Falcon",
-  "Tiger",
-  "Octopus",
-  "Wolf",
-  "Hedgehog",
-  "Penguin",
-  "Koala",
-] as const
-
-const ADJECTIVES = [
-  "Curious",
-  "Lucid",
-  "Quiet",
-  "Brisk",
-  "Glowing",
-  "Stellar",
-  "Mellow",
-  "Nimble",
-] as const
-
-const PRESENCE_STORAGE_KEY = "codesign:presence"
-
-const randomFrom = <T,>(arr: readonly T[]): T =>
-  arr[Math.floor(Math.random() * arr.length)] as T
-
-const loadOrCreatePresence = () => {
-  if (typeof window === "undefined") {
-    return { name: "Guest", color: PRESENCE_COLORS[0] as string }
+// Stable per-user color derived from the user id so the same person shows up
+// in the same color across reloads / tabs.
+const colorForUser = (id: string) => {
+  let hash = 0
+  for (let i = 0; i < id.length; i += 1) {
+    hash = (hash * 31 + id.charCodeAt(i)) | 0
   }
-  try {
-    const cached = window.localStorage.getItem(PRESENCE_STORAGE_KEY)
-    if (cached) {
-      const parsed = JSON.parse(cached) as { name: string; color: string }
-      if (parsed?.name && parsed?.color) return parsed
-    }
-  } catch {
-    // ignore
-  }
-  const presence = {
-    name: `${randomFrom(ADJECTIVES)} ${randomFrom(ANIMALS)}`,
-    color: randomFrom(PRESENCE_COLORS),
-  }
-  try {
-    window.localStorage.setItem(PRESENCE_STORAGE_KEY, JSON.stringify(presence))
-  } catch {
-    // ignore
-  }
-  return presence
-}
-
-const getRoom = () => {
-  if (typeof window === "undefined") return "default-room"
-  const params = new URLSearchParams(window.location.search)
-  return params.get("room") ?? "default-room"
+  const idx = Math.abs(hash) % PRESENCE_COLORS.length
+  return PRESENCE_COLORS[idx] as string
 }
 
 const getWsUrl = () => {
@@ -138,26 +102,29 @@ const getWsUrl = () => {
   return "ws://localhost:1234"
 }
 
-function CollabFlowInner() {
+function CollabFlowInner({ project, user }: CollabFlowProps) {
   const reactFlow = useReactFlow()
   const containerRef = useRef<HTMLDivElement | null>(null)
 
   const [nodes, setNodes] = useState<Node[]>(DEFAULT_NODES)
   const [edges, setEdges] = useState<Edge[]>(DEFAULT_EDGES)
   const [collaborators, setCollaborators] = useState<CollaboratorPresence[]>([])
-  const [status, setStatus] = useState<"connecting" | "connected" | "disconnected">(
-    "connecting",
-  )
+  const [status, setStatus] = useState<
+    "connecting" | "connected" | "disconnected"
+  >("connecting")
 
   // Stable Yjs doc + provider for the lifetime of this component instance.
   const ydoc = useMemo(() => new Y.Doc(), [])
   const ynodes = useMemo(() => ydoc.getMap<Node>(FLOW_NODES_KEY), [ydoc])
   const yedges = useMemo(() => ydoc.getMap<Edge>(FLOW_EDGES_KEY), [ydoc])
-  const presence = useMemo(loadOrCreatePresence, [])
-  const room = useMemo(getRoom, [])
-  const wsUrl = useMemo(getWsUrl, [])
+  const presence = useMemo(
+    () => ({ name: user.name, color: colorForUser(user.id) }),
+    [user.id, user.name]
+  )
+  const room = project.id
+  const wsUrl = useMemo(() => getWsUrl(), [])
 
-  const providerRef = useRef<WebsocketProvider | null>(null)
+  const providerRef = useRef<HocuspocusProvider | null>(null)
   // Track whether a sync change is being applied so we don't echo it back to Yjs.
   const applyingRemote = useRef(false)
 
@@ -179,21 +146,9 @@ function CollabFlowInner() {
 
   // Wire up the provider + observers + awareness once.
   useEffect(() => {
-    const provider = new WebsocketProvider(wsUrl, room, ydoc, { connect: true })
-    providerRef.current = provider
-
-    provider.on("status", (event: { status: string }) => {
-      if (event.status === "connected") setStatus("connected")
-      else if (event.status === "connecting") setStatus("connecting")
-      else setStatus("disconnected")
-    })
-
-    provider.awareness.setLocalStateField("user", {
-      name: presence.name,
-      color: presence.color,
-    })
-
-    // Seed initial document on first connection if it's empty.
+    // Seed initial document on first connection if it's empty. Both the
+    // server (via Database extension) and any earlier client may have
+    // already populated this document, so we only seed when truly empty.
     const seedIfEmpty = () => {
       if (ynodes.size === 0 && yedges.size === 0) {
         ydoc.transact(() => {
@@ -202,10 +157,26 @@ function CollabFlowInner() {
         }, "seed")
       }
     }
-    const onSync = (synced: boolean) => {
-      if (synced) seedIfEmpty()
-    }
-    provider.on("sync", onSync)
+
+    const provider = new HocuspocusProvider({
+      url: wsUrl,
+      name: room,
+      document: ydoc,
+      onStatus: ({ status }) => {
+        if (status === "connected") setStatus("connected")
+        else if (status === "connecting") setStatus("connecting")
+        else setStatus("disconnected")
+      },
+      onSynced: () => {
+        seedIfEmpty()
+      },
+    })
+    providerRef.current = provider
+
+    provider.awareness?.setLocalStateField("user", {
+      name: presence.name,
+      color: presence.color,
+    })
 
     const onNodesObserve = () => {
       applyingRemote.current = true
@@ -226,17 +197,27 @@ function CollabFlowInner() {
     ynodes.observeDeep(onNodesObserve)
     yedges.observeDeep(onEdgesObserve)
 
-    // Hydrate from existing remote state immediately (in case we joined late).
-    if (ynodes.size > 0) setNodes(snapshotNodes())
-    if (yedges.size > 0) setEdges(snapshotEdges())
+    // Hydrate from existing remote state (in case we joined late). Defer to a
+    // microtask so we don't setState synchronously inside the effect body.
+    queueMicrotask(() => {
+      if (ynodes.size > 0) setNodes(snapshotNodes())
+      if (yedges.size > 0) setEdges(snapshotEdges())
+    })
 
     const onAwarenessChange = () => {
-      const states = provider.awareness.getStates()
+      const awareness = provider.awareness
+      if (!awareness) return
+      const states = awareness.getStates()
       const others: CollaboratorPresence[] = []
       states.forEach((state, clientId) => {
-        if (clientId === provider.awareness.clientID) return
-        const user = state?.user as { name?: string; color?: string } | undefined
-        const cursor = state?.cursor as { x: number; y: number } | null | undefined
+        if (clientId === awareness.clientID) return
+        const user = state?.user as
+          | { name?: string; color?: string }
+          | undefined
+        const cursor = state?.cursor as
+          | { x: number; y: number }
+          | null
+          | undefined
         if (!user?.name || !user?.color) return
         others.push({
           id: clientId,
@@ -247,18 +228,26 @@ function CollabFlowInner() {
       })
       setCollaborators(others)
     }
-    provider.awareness.on("change", onAwarenessChange)
+    provider.awareness?.on("change", onAwarenessChange)
 
     return () => {
       ynodes.unobserveDeep(onNodesObserve)
       yedges.unobserveDeep(onEdgesObserve)
-      provider.off("sync", onSync)
-      provider.awareness.off("change", onAwarenessChange)
-      provider.awareness.setLocalState(null)
+      provider.awareness?.off("change", onAwarenessChange)
+      provider.awareness?.setLocalState(null)
       provider.destroy()
       providerRef.current = null
     }
-  }, [ydoc, ynodes, yedges, presence, room, wsUrl, snapshotNodes, snapshotEdges])
+  }, [
+    ydoc,
+    ynodes,
+    yedges,
+    presence,
+    room,
+    wsUrl,
+    snapshotNodes,
+    snapshotEdges,
+  ])
 
   // ---- React Flow change handlers -----------------------------------------
 
@@ -289,7 +278,7 @@ function CollabFlowInner() {
         }
       }, "local")
     },
-    [nodes, ydoc, ynodes],
+    [nodes, ydoc, ynodes]
   )
 
   const onEdgesChange = useCallback(
@@ -317,7 +306,7 @@ function CollabFlowInner() {
         }
       }, "local")
     },
-    [edges, ydoc, yedges],
+    [edges, ydoc, yedges]
   )
 
   const onConnect = useCallback(
@@ -331,7 +320,7 @@ function CollabFlowInner() {
         }
       }, "local")
     },
-    [edges, ydoc, yedges],
+    [edges, ydoc, yedges]
   )
 
   // ---- Toolbar actions -----------------------------------------------------
@@ -364,16 +353,12 @@ function CollabFlowInner() {
 
   const copyShareLink = useCallback(async () => {
     if (typeof window === "undefined") return
-    const url = new URL(window.location.href)
-    url.searchParams.set("room", room)
     try {
-      await navigator.clipboard.writeText(url.toString())
+      await navigator.clipboard.writeText(window.location.href)
     } catch {
       // ignore
     }
-  }, [room])
-
-  // ---- Cursor broadcasting -------------------------------------------------
+  }, [])
 
   const onPointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -381,21 +366,19 @@ function CollabFlowInner() {
       if (!provider) return
       const bounds = containerRef.current?.getBoundingClientRect()
       if (!bounds) return
-      provider.awareness.setLocalStateField("cursor", {
+      provider.awareness?.setLocalStateField("cursor", {
         x: (event.clientX - bounds.left) / bounds.width,
         y: (event.clientY - bounds.top) / bounds.height,
       })
     },
-    [],
+    []
   )
 
   const onPointerLeave = useCallback(() => {
     const provider = providerRef.current
     if (!provider) return
-    provider.awareness.setLocalStateField("cursor", null)
+    provider.awareness?.setLocalStateField("cursor", null)
   }, [])
-
-  // -------------------------------------------------------------------------
 
   return (
     <div
@@ -419,18 +402,27 @@ function CollabFlowInner() {
 
         <Panel position="top-left">
           <div className="flex items-center gap-2 rounded-md border bg-background/90 p-2 shadow-sm backdrop-blur">
+            <Button
+              size="sm"
+              variant="ghost"
+              nativeButton={false}
+              render={<Link href="/projects" />}
+            >
+              ← Projects
+            </Button>
+            <span className="text-xs text-muted-foreground">·</span>
+            <span className="text-xs font-medium">{project.name}</span>
+            <span className="text-xs text-muted-foreground">·</span>
             <span
               className={cn(
                 "size-2 rounded-full",
                 status === "connected" && "bg-emerald-500",
                 status === "connecting" && "animate-pulse bg-amber-500",
-                status === "disconnected" && "bg-rose-500",
+                status === "disconnected" && "bg-rose-500"
               )}
               aria-hidden
             />
             <span className="text-xs font-medium capitalize">{status}</span>
-            <span className="text-xs text-muted-foreground">·</span>
-            <span className="text-xs text-muted-foreground">room: {room}</span>
           </div>
         </Panel>
 
@@ -462,7 +454,10 @@ function PresenceStack({
   me: { name: string; color: string }
   others: CollaboratorPresence[]
 }) {
-  const all = [{ id: -1, name: me.name, color: me.color, isMe: true }, ...others]
+  const all = [
+    { id: -1, name: me.name, color: me.color, isMe: true },
+    ...others,
+  ]
   return (
     <div className="flex -space-x-2">
       {all.slice(0, 5).map((user) => (
@@ -511,22 +506,22 @@ function RemoteCursors({
               <path d="M5 3l14 8-6 1-3 6-5-15z" />
             </svg>
             <div
-              className="ml-3 -mt-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium text-white"
+              className="-mt-2 ml-3 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium text-white"
               style={{ backgroundColor: user.color }}
             >
               {user.name}
             </div>
           </div>
-        ) : null,
+        ) : null
       )}
     </div>
   )
 }
 
-export function CollabFlow() {
+export function CollabFlow(props: CollabFlowProps) {
   return (
     <ReactFlowProvider>
-      <CollabFlowInner />
+      <CollabFlowInner {...props} />
     </ReactFlowProvider>
   )
 }

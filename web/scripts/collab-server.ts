@@ -1,224 +1,294 @@
 /**
- * Minimal y-websocket-compatible server for the collaborative React Flow demo.
+ * Codesign collaborative server.
  *
  * Run with:
  *   bun run dev:ws
  *
- * Re-implements the small subset of the y-websocket binary protocol that
- * browsers using `y-websocket` need (sync step 1/2, sync update, awareness
- * update). It speaks the same wire format, so any standard y-websocket client
- * can connect to it.
+ * This single Bun process serves two things on the same TCP port:
  *
- * One Y.Doc per room is kept in-memory only; restarting wipes state.
+ *   1. A Hocuspocus websocket server (Yjs sync + awareness), with documents
+ *      persisted to Supabase Postgres via @hocuspocus/extension-database.
+ *      The browser uses @hocuspocus/provider, NOT y-websocket — Hocuspocus 4
+ *      embeds the document name inside its protocol messages and is not
+ *      wire-compatible with the legacy y-websocket server.
+ *
+ *   2. A small HTTP REST API consumed by the Next app to list / create /
+ *      look up projects (rooms). Keeping it on the same port means there's
+ *      one URL to configure (NEXT_PUBLIC_COLLAB_HTTP_URL ===
+ *      NEXT_PUBLIC_COLLAB_WS_URL host).
+ *
+ * Environment:
+ *   COLLAB_WS_PORT (default 1234)
+ *   COLLAB_WS_HOST (default 0.0.0.0)
+ *   SUPABASE_URL                  — required
+ *   SUPABASE_SERVICE_ROLE_KEY     — required (server-to-server, never ship
+ *                                    this to the browser)
  */
 
-import { createServer, type IncomingMessage } from "node:http"
-import * as decoding from "lib0/decoding"
-import * as encoding from "lib0/encoding"
-import * as awarenessProtocol from "y-protocols/awareness"
-import * as syncProtocol from "y-protocols/sync"
-import { WebSocket, WebSocketServer } from "ws"
-import * as Y from "yjs"
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http"
+import { Database } from "@hocuspocus/extension-database"
+import { Hocuspocus } from "@hocuspocus/server"
+import { createClient } from "@supabase/supabase-js"
+import { WebSocketServer } from "ws"
 
 const PORT = Number(process.env.COLLAB_WS_PORT ?? 1234)
 const HOST = process.env.COLLAB_WS_HOST ?? "0.0.0.0"
 
-// y-websocket message types
-const MESSAGE_SYNC = 0
-const MESSAGE_AWARENESS = 1
+const SUPABASE_URL = process.env.SUPABASE_URL
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-class Room {
-  readonly doc: Y.Doc
-  readonly awareness: awarenessProtocol.Awareness
-  readonly conns: Map<WebSocket, Set<number>> = new Map()
-
-  constructor(public readonly name: string) {
-    this.doc = new Y.Doc()
-    this.awareness = new awarenessProtocol.Awareness(this.doc)
-    this.awareness.setLocalState(null)
-
-    this.doc.on("update", (update: Uint8Array, origin: unknown) => {
-      const encoder = encoding.createEncoder()
-      encoding.writeVarUint(encoder, MESSAGE_SYNC)
-      syncProtocol.writeUpdate(encoder, update)
-      const message = encoding.toUint8Array(encoder)
-      this.broadcast(message, origin instanceof WebSocket ? origin : null)
-    })
-
-    this.awareness.on(
-      "update",
-      (
-        {
-          added,
-          updated,
-          removed,
-        }: { added: number[]; updated: number[]; removed: number[] },
-        origin: unknown,
-      ) => {
-        const changedClients = added.concat(updated, removed)
-        const encoder = encoding.createEncoder()
-        encoding.writeVarUint(encoder, MESSAGE_AWARENESS)
-        encoding.writeVarUint8Array(
-          encoder,
-          awarenessProtocol.encodeAwarenessUpdate(this.awareness, changedClients),
-        )
-        const message = encoding.toUint8Array(encoder)
-        this.broadcast(message, origin instanceof WebSocket ? origin : null)
-      },
-    )
-  }
-
-  broadcast(message: Uint8Array, exclude: WebSocket | null) {
-    for (const conn of this.conns.keys()) {
-      if (conn === exclude) continue
-      if (conn.readyState !== WebSocket.OPEN) continue
-      try {
-        conn.send(message)
-      } catch (err) {
-        console.warn(`[collab-server] send failed: ${(err as Error).message}`)
-      }
-    }
-  }
-
-  addConnection(conn: WebSocket) {
-    this.conns.set(conn, new Set())
-
-    // 1. Send sync step 1 → client will respond with step 2 + an update.
-    {
-      const encoder = encoding.createEncoder()
-      encoding.writeVarUint(encoder, MESSAGE_SYNC)
-      syncProtocol.writeSyncStep1(encoder, this.doc)
-      conn.send(encoding.toUint8Array(encoder))
-    }
-
-    // 2. Send current awareness state to the new client.
-    const awarenessStates = this.awareness.getStates()
-    if (awarenessStates.size > 0) {
-      const encoder = encoding.createEncoder()
-      encoding.writeVarUint(encoder, MESSAGE_AWARENESS)
-      encoding.writeVarUint8Array(
-        encoder,
-        awarenessProtocol.encodeAwarenessUpdate(
-          this.awareness,
-          Array.from(awarenessStates.keys()),
-        ),
-      )
-      conn.send(encoding.toUint8Array(encoder))
-    }
-  }
-
-  removeConnection(conn: WebSocket) {
-    const controlled = this.conns.get(conn)
-    this.conns.delete(conn)
-    if (controlled && controlled.size > 0) {
-      awarenessProtocol.removeAwarenessStates(
-        this.awareness,
-        Array.from(controlled),
-        conn,
-      )
-    }
-  }
-
-  handleMessage(conn: WebSocket, data: Uint8Array) {
-    try {
-      const decoder = decoding.createDecoder(data)
-      const messageType = decoding.readVarUint(decoder)
-      switch (messageType) {
-        case MESSAGE_SYNC: {
-          const encoder = encoding.createEncoder()
-          encoding.writeVarUint(encoder, MESSAGE_SYNC)
-          syncProtocol.readSyncMessage(decoder, encoder, this.doc, conn)
-          // syncProtocol writes a response (e.g. sync step 2) into the encoder.
-          if (encoding.length(encoder) > 1) {
-            conn.send(encoding.toUint8Array(encoder))
-          }
-          break
-        }
-        case MESSAGE_AWARENESS: {
-          const update = decoding.readVarUint8Array(decoder)
-          awarenessProtocol.applyAwarenessUpdate(this.awareness, update, conn)
-          // Track which clientIds belong to this connection so we can clean
-          // them up on disconnect.
-          const tracked = this.conns.get(conn)
-          if (tracked) {
-            for (const clientId of this.awareness.getStates().keys()) {
-              const meta = (
-                this.awareness as unknown as {
-                  meta: Map<number, { clock: number; lastUpdated: number }>
-                }
-              ).meta
-              if (meta?.has(clientId)) tracked.add(clientId)
-            }
-          }
-          break
-        }
-        default:
-          console.warn(`[collab-server] unknown message type: ${messageType}`)
-      }
-    } catch (err) {
-      console.error(`[collab-server] message handler error:`, err)
-    }
-  }
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  console.error(
+    "[collab-server] SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY env vars are required.\n" +
+      "Copy .env.example → .env.local and fill them in."
+  )
+  process.exit(1)
 }
 
-const rooms = new Map<string, Room>()
-
-const getRoom = (name: string): Room => {
-  let room = rooms.get(name)
-  if (!room) {
-    room = new Room(name)
-    rooms.set(name, room)
-    console.log(`[collab-server] room created: "${name}"`)
-  }
-  return room
-}
-
-const parseRoomName = (req: IncomingMessage): string => {
-  const url = req.url ?? "/"
-  const path = url.split("?")[0] ?? "/"
-  const name = path.replace(/^\/+/, "")
-  return name.length > 0 ? decodeURIComponent(name) : "default-room"
-}
-
-const httpServer = createServer((_req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" })
-  res.end("collab-server ok\n")
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false, autoRefreshToken: false },
 })
+
+// ---- Project metadata helpers ------------------------------------------------
+
+type ProjectRow = {
+  id: string
+  name: string
+  created_at: string
+}
+
+type ProjectMeta = {
+  id: string
+  name: string
+  createdAt: string
+}
+
+const toMeta = (row: ProjectRow): ProjectMeta => ({
+  id: row.id,
+  name: row.name,
+  createdAt: row.created_at,
+})
+
+const slugify = (name: string) =>
+  name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40) || "project"
+
+/**
+ * Generate a project id that doesn't collide with an existing row. Race-y,
+ * but good enough for hackathon traffic — the unique constraint on the
+ * primary key is the real safety net.
+ */
+const newProjectId = async (name: string): Promise<string> => {
+  const base = slugify(name)
+  let candidate = base
+  let i = 1
+  while (true) {
+    const { data, error } = await supabase
+      .from("projects")
+      .select("id")
+      .eq("id", candidate)
+      .maybeSingle()
+    if (error) throw error
+    if (!data) return candidate
+    i += 1
+    candidate = `${base}-${i}`
+  }
+}
+
+const listProjects = async (): Promise<ProjectMeta[]> => {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("id,name,created_at")
+    .order("created_at", { ascending: false })
+    .limit(200)
+  if (error) throw error
+  return (data ?? []).map(toMeta)
+}
+
+const getProject = async (id: string): Promise<ProjectMeta | null> => {
+  const { data, error } = await supabase
+    .from("projects")
+    .select("id,name,created_at")
+    .eq("id", id)
+    .maybeSingle()
+  if (error) throw error
+  return data ? toMeta(data) : null
+}
+
+const insertProject = async (name: string): Promise<ProjectMeta> => {
+  const id = await newProjectId(name)
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({ id, name })
+    .select("id,name,created_at")
+    .single()
+  if (error) throw error
+  return toMeta(data)
+}
+
+// ---- Hocuspocus --------------------------------------------------------------
+
+const hocuspocus = new Hocuspocus({
+  name: "codesign",
+  extensions: [
+    new Database({
+      fetch: async ({ documentName }) => {
+        const { data, error } = await supabase
+          .from("project_documents")
+          .select("state_b64")
+          .eq("project_id", documentName)
+          .maybeSingle()
+        if (error) {
+          console.error(`[collab-server] fetch ${documentName} failed:`, error)
+          return null
+        }
+        if (!data?.state_b64) return null
+        return new Uint8Array(Buffer.from(data.state_b64, "base64"))
+      },
+      store: async ({ documentName, state }) => {
+        // The project row may not exist yet if a client raced ahead of the
+        // POST /api/projects round trip. Ensure it exists so the FK holds.
+        await supabase
+          .from("projects")
+          .upsert(
+            { id: documentName, name: documentName },
+            { onConflict: "id", ignoreDuplicates: true }
+          )
+        const { error } = await supabase.from("project_documents").upsert({
+          project_id: documentName,
+          state_b64: Buffer.from(state).toString("base64"),
+          updated_at: new Date().toISOString(),
+        })
+        if (error) {
+          console.error(`[collab-server] store ${documentName} failed:`, error)
+        }
+      },
+    }),
+  ],
+})
+
+// ---- HTTP --------------------------------------------------------------------
+
+const jsonResponse = (res: ServerResponse, status: number, body: unknown) => {
+  res.writeHead(status, { "Content-Type": "application/json" })
+  res.end(JSON.stringify(body))
+}
+
+const readJson = (req: IncomingMessage): Promise<{ name?: string }> =>
+  new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    req.on("data", (chunk) => chunks.push(chunk as Buffer))
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8")
+      if (raw.length === 0) return resolve({})
+      try {
+        resolve(JSON.parse(raw))
+      } catch (err) {
+        reject(err)
+      }
+    })
+    req.on("error", reject)
+  })
+
+const httpServer = createServer(async (req, res) => {
+  // Permissive CORS — the Vercel-hosted frontend talks to us cross-origin.
+  res.setHeader("Access-Control-Allow-Origin", "*")
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization")
+
+  if (req.method === "OPTIONS") {
+    res.writeHead(204)
+    res.end()
+    return
+  }
+
+  const url = new URL(
+    req.url ?? "/",
+    `http://${req.headers.host ?? "localhost"}`
+  )
+  const pathname = url.pathname
+
+  try {
+    if (pathname === "/" || pathname === "/health") {
+      res.writeHead(200, { "Content-Type": "text/plain" })
+      res.end("collab-server ok\n")
+      return
+    }
+
+    if (pathname === "/api/projects" && req.method === "GET") {
+      const projects = await listProjects()
+      return jsonResponse(res, 200, { projects })
+    }
+
+    if (pathname === "/api/projects" && req.method === "POST") {
+      const body = await readJson(req).catch(() => ({}) as { name?: string })
+      const name =
+        typeof body?.name === "string" && body.name.trim().length > 0
+          ? body.name.trim().slice(0, 80)
+          : "Untitled project"
+      const project = await insertProject(name)
+      console.log(`[collab-server] project created: "${project.id}" (${name})`)
+      return jsonResponse(res, 201, { project })
+    }
+
+    const projectMatch = pathname.match(/^\/api\/projects\/([^/]+)$/)
+    if (projectMatch && req.method === "GET") {
+      const id = decodeURIComponent(projectMatch[1] ?? "")
+      const project = await getProject(id)
+      if (!project) return jsonResponse(res, 404, { error: "not_found" })
+      return jsonResponse(res, 200, { project })
+    }
+
+    jsonResponse(res, 404, { error: "not_found" })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    console.error(`[collab-server] http error ${pathname}:`, err)
+    // Surface the message in dev so the Next side shows something useful
+    // instead of a generic 500. Safe enough for a hackathon backend; tighten
+    // before exposing publicly.
+    jsonResponse(res, 500, { error: "internal_error", message })
+  }
+})
+
+// ---- WebSocket upgrade → Hocuspocus -----------------------------------------
 
 const wss = new WebSocketServer({ noServer: true })
 
-wss.on("connection", (conn: WebSocket, req: IncomingMessage) => {
-  const roomName = parseRoomName(req)
-  const room = getRoom(roomName)
-
-  conn.binaryType = "arraybuffer"
-  room.addConnection(conn)
-
-  conn.on("message", (data: ArrayBuffer | Buffer | Buffer[]) => {
-    let bytes: Uint8Array
-    if (data instanceof ArrayBuffer) bytes = new Uint8Array(data)
-    else if (Array.isArray(data)) bytes = new Uint8Array(Buffer.concat(data))
-    else bytes = new Uint8Array(data)
-    room.handleMessage(conn, bytes)
-  })
-
-  const cleanup = () => {
-    room.removeConnection(conn)
-    if (room.conns.size === 0) {
-      rooms.delete(roomName)
-      console.log(`[collab-server] room emptied: "${roomName}"`)
-    }
-  }
-  conn.on("close", cleanup)
-  conn.on("error", cleanup)
-})
-
 httpServer.on("upgrade", (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => {
-    wss.emit("connection", ws, req)
+    // Hocuspocus types `request` as a Fetch Request, but at runtime it only
+    // touches `.url` and `.headers`, both of which Node's IncomingMessage
+    // already provides. Cast for TS, the duck typing works.
+    hocuspocus.handleConnection(ws, req as unknown as Request)
   })
 })
+
+// ---- Lifecycle ---------------------------------------------------------------
 
 httpServer.listen(PORT, HOST, () => {
   console.log(`[collab-server] listening on ws://${HOST}:${PORT}`)
+  console.log(`[collab-server] http on    http://${HOST}:${PORT}`)
 })
+
+const shutdown = async (signal: string) => {
+  console.log(`[collab-server] ${signal} received, flushing pending stores…`)
+  try {
+    hocuspocus.flushPendingStores()
+  } catch (err) {
+    console.error(`[collab-server] flush failed:`, err)
+  }
+  httpServer.close(() => process.exit(0))
+  // hard cap so we don't hang forever on stuck sockets
+  setTimeout(() => process.exit(0), 3000).unref()
+}
+
+process.on("SIGINT", () => void shutdown("SIGINT"))
+process.on("SIGTERM", () => void shutdown("SIGTERM"))
