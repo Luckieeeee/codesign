@@ -425,9 +425,9 @@ export function CanvasAgent({
       <button
         type="button"
         onClick={() => setIsOpen(true)}
-        title="Ask the design copilot (⌘I)"
+        title="Ask the AI design agent (⌘I)"
         className={cn(
-          "absolute bottom-6 left-1/2 z-30 flex -translate-x-1/2 items-center gap-2",
+          "absolute bottom-6 left-24 z-30 flex items-center gap-2",
           "rounded-full border border-border/60 bg-card px-3.5 py-2 text-sm font-medium text-foreground shadow-lg backdrop-blur-md",
           "transition-colors hover:bg-muted",
         )}
@@ -435,7 +435,7 @@ export function CanvasAgent({
         <span className="flex size-5 items-center justify-center rounded-full bg-foreground text-background">
           <SparklesIcon className="size-3" />
         </span>
-        <span>Ask agent</span>
+        <span>Ask AI agent</span>
         <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
           ⌘I
         </span>

@@ -1,6 +1,6 @@
 "use client"
 
-import { Group } from "lucide-react"
+import { AlignHorizontalSpaceAround, Group } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
@@ -85,7 +85,7 @@ export function ActionToolbar({
         label="Auto-layout (⌘L)"
         onClick={onAutoLayout}
         disabled={!canAutoLayout}
-        icon={<LayoutGlyph />}
+        icon={<AlignHorizontalSpaceAround className="size-4" />}
       />
 
       <Divider />
@@ -284,32 +284,6 @@ function RedoGlyph() {
   )
 }
 
-function GroupGlyph() {
-  return (
-    <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <rect
-        x="3"
-        y="3"
-        width="18"
-        height="18"
-        rx="2"
-        strokeDasharray="3 3"
-      />
-      <rect x="7" y="7" width="4" height="4" rx="1" />
-      <rect x="13" y="13" width="4" height="4" rx="1" />
-    </svg>
-  )
-}
-
 function TaskGlyph() {
   return (
     <svg
@@ -349,28 +323,6 @@ function TextGlyph() {
       <path d="M15 5v14" />
       <path d="M7 19h4" />
       <path d="M13 19h4" />
-    </svg>
-  )
-}
-
-function LayoutGlyph() {
-  return (
-    <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {/* Three nodes connected left → middle → right + middle → bottom-right */}
-      <rect x="2" y="9" width="6" height="6" rx="1.5" />
-      <rect x="16" y="3" width="6" height="6" rx="1.5" />
-      <rect x="16" y="15" width="6" height="6" rx="1.5" />
-      <path d="M8 12 L16 6" />
-      <path d="M8 12 L16 18" />
     </svg>
   )
 }

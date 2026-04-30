@@ -123,10 +123,28 @@ function pointOnSide(rect: Rect, side: CanvasHandleSide): Point {
   }
 }
 
+function sideVector(side: CanvasHandleSide): Point {
+  switch (side) {
+    case "top":
+      return { x: 0, y: -1 }
+    case "right":
+      return { x: 1, y: 0 }
+    case "bottom":
+      return { x: 0, y: 1 }
+    case "left":
+      return { x: -1, y: 0 }
+  }
+}
+
 function endpointPoints(
   edge: Pick<Edge, "source" | "target" | "sourceHandle" | "targetHandle">,
   nodeIndex: ReadonlyMap<string, Node>,
-): { source: Point; target: Point } | null {
+): {
+  source: Point
+  target: Point
+  sourceSide: CanvasHandleSide
+  targetSide: CanvasHandleSide
+} | null {
   const source = nodeIndex.get(edge.source)
   const target = nodeIndex.get(edge.target)
   if (!source || !target) return null
@@ -140,6 +158,8 @@ function endpointPoints(
   return {
     source: pointOnSide(sourceRect, sourceSide),
     target: pointOnSide(targetRect, targetSide),
+    sourceSide,
+    targetSide,
   }
 }
 
@@ -310,6 +330,18 @@ function edgeObstacles(
   return obstacles
 }
 
+function nearestHorizontalLane(referenceY: number, above: number, below: number) {
+  return Math.abs(referenceY - above) <= Math.abs(referenceY - below)
+    ? above
+    : below
+}
+
+function nearestVerticalLane(referenceX: number, left: number, right: number) {
+  return Math.abs(referenceX - left) <= Math.abs(referenceX - right)
+    ? left
+    : right
+}
+
 function buildObstacleRoute(
   edge: Pick<Edge, "source" | "target" | "sourceHandle" | "targetHandle">,
   nodeIndex: ReadonlyMap<string, Node>,
@@ -317,50 +349,117 @@ function buildObstacleRoute(
   const endpoints = endpointPoints(edge, nodeIndex)
   if (!endpoints) return null
 
-  const source = endpoints.source
-  const target = endpoints.target
+  const { source, sourceSide, target, targetSide } = endpoints
   const obstacles = edgeObstacles(edge, nodeIndex).filter((rect) =>
     segmentIntersectsRect(source, target, rect),
   )
   if (obstacles.length === 0) return null
 
+  const sourceOut = sideVector(sourceSide)
+  const targetOut = sideVector(targetSide)
+  const sourceStub = {
+    x: source.x + sourceOut.x * ROUTE_STUB,
+    y: source.y + sourceOut.y * ROUTE_STUB,
+  }
+  const targetStub = {
+    x: target.x + targetOut.x * ROUTE_STUB,
+    y: target.y + targetOut.y * ROUTE_STUB,
+  }
   const dx = target.x - source.x
   const dy = target.y - source.y
 
   if (Math.abs(dx) >= Math.abs(dy)) {
-    const sourceStub = source.x + Math.sign(dx || 1) * ROUTE_STUB
-    const targetStub = target.x - Math.sign(dx || 1) * ROUTE_STUB
     const above = Math.min(...obstacles.map((rect) => rect.y)) - ROUTE_CLEARANCE
     const below =
       Math.max(...obstacles.map((rect) => rect.y + rect.height)) +
       ROUTE_CLEARANCE
+    const left =
+      Math.min(source.x, target.x, ...obstacles.map((rect) => rect.x)) -
+      ROUTE_CLEARANCE
+    const right =
+      Math.max(
+        source.x,
+        target.x,
+        ...obstacles.map((rect) => rect.x + rect.width),
+      ) + ROUTE_CLEARANCE
+
+    if (sourceOut.y !== 0 && targetOut.y !== 0 && sourceOut.y !== targetOut.y) {
+      const connectorX = nearestVerticalLane(sourceStub.x, left, right)
+      const points = compactPoints([
+        source,
+        sourceStub,
+        { x: connectorX, y: sourceStub.y },
+        { x: connectorX, y: targetStub.y },
+        targetStub,
+        target,
+      ])
+      return { points: points.slice(1, -1), label: routeLabel(points) }
+    }
+
     const routeY =
-      Math.abs(source.y - above) <= Math.abs(source.y - below) ? above : below
+      sourceOut.y > 0
+        ? below
+        : sourceOut.y < 0
+          ? above
+          : targetOut.y > 0
+            ? below
+            : targetOut.y < 0
+              ? above
+              : nearestHorizontalLane(source.y, above, below)
     const points = compactPoints([
       source,
-      { x: sourceStub, y: source.y },
-      { x: sourceStub, y: routeY },
-      { x: targetStub, y: routeY },
-      { x: targetStub, y: target.y },
+      sourceStub,
+      { x: sourceStub.x, y: routeY },
+      { x: targetStub.x, y: routeY },
+      targetStub,
       target,
     ])
     return { points: points.slice(1, -1), label: routeLabel(points) }
   }
 
-  const sourceStub = source.y + Math.sign(dy || 1) * ROUTE_STUB
-  const targetStub = target.y - Math.sign(dy || 1) * ROUTE_STUB
   const left = Math.min(...obstacles.map((rect) => rect.x)) - ROUTE_CLEARANCE
   const right =
     Math.max(...obstacles.map((rect) => rect.x + rect.width)) +
     ROUTE_CLEARANCE
+  const above =
+    Math.min(source.y, target.y, ...obstacles.map((rect) => rect.y)) -
+    ROUTE_CLEARANCE
+  const below =
+    Math.max(
+      source.y,
+      target.y,
+      ...obstacles.map((rect) => rect.y + rect.height),
+    ) + ROUTE_CLEARANCE
+
+  if (sourceOut.x !== 0 && targetOut.x !== 0 && sourceOut.x !== targetOut.x) {
+    const connectorY = nearestHorizontalLane(sourceStub.y, above, below)
+    const points = compactPoints([
+      source,
+      sourceStub,
+      { x: sourceStub.x, y: connectorY },
+      { x: targetStub.x, y: connectorY },
+      targetStub,
+      target,
+    ])
+    return { points: points.slice(1, -1), label: routeLabel(points) }
+  }
+
   const routeX =
-    Math.abs(source.x - left) <= Math.abs(source.x - right) ? left : right
+    sourceOut.x > 0
+      ? right
+      : sourceOut.x < 0
+        ? left
+        : targetOut.x > 0
+          ? right
+          : targetOut.x < 0
+            ? left
+            : nearestVerticalLane(source.x, left, right)
   const points = compactPoints([
     source,
-    { x: source.x, y: sourceStub },
-    { x: routeX, y: sourceStub },
-    { x: routeX, y: targetStub },
-    { x: target.x, y: targetStub },
+    sourceStub,
+    { x: routeX, y: sourceStub.y },
+    { x: routeX, y: targetStub.y },
+    targetStub,
     target,
   ])
   return { points: points.slice(1, -1), label: routeLabel(points) }

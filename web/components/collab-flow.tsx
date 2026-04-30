@@ -596,9 +596,55 @@ function CollabFlowInner({ project, user }: CollabFlowProps) {
         },
         [nodes, stableNodeUpdate, taskVisibility, user.id]
     )
+    const selectedNodeIds = useMemo(() => {
+        const ids = new Set<string>()
+        for (const node of nodes) {
+            if (node.selected) ids.add(node.id)
+        }
+        if (selection?.kind === "node") ids.add(selection.id)
+        return ids
+    }, [nodes, selection])
+    const selectEdgeFromLabel = useCallback((edgeId: string) => {
+        setNodes((prev) =>
+            prev.some((node) => node.selected)
+                ? prev.map((node) =>
+                      node.selected ? { ...node, selected: false } : node
+                  )
+                : prev
+        )
+        setEdges((prev) =>
+            prev.map((edge) =>
+                edge.id === edgeId
+                    ? { ...edge, selected: true }
+                    : edge.selected
+                      ? { ...edge, selected: false }
+                      : edge
+            )
+        )
+        setSelection({ kind: "edge", id: edgeId })
+    }, [])
+    const hasCanvasSelection = useMemo(
+        () => selectedNodeIds.size > 0 || edges.some((edge) => edge.selected),
+        [edges, selectedNodeIds]
+    )
     const edgesForFlow = useMemo(
-        () => routeEdges(edges, nodes, { rerouteHandles: false }),
-        [edges, nodes]
+        () =>
+            routeEdges(edges, nodes, { rerouteHandles: false }).map((edge) => {
+                const highlighted =
+                    selectedNodeIds.has(edge.source) || selectedNodeIds.has(edge.target)
+                const raised = highlighted || edge.selected === true
+                return {
+                    ...edge,
+                    zIndex: raised ? 20 : edge.zIndex,
+                    data: {
+                        ...((edge.data as Record<string, unknown> | undefined) ?? {}),
+                        _highlighted: highlighted,
+                        _selectionActive: hasCanvasSelection,
+                        onSelectEdge: selectEdgeFromLabel,
+                    },
+                }
+            }),
+        [edges, nodes, selectedNodeIds, hasCanvasSelection, selectEdgeFromLabel]
     )
 
     // ---- React Flow change handlers -----------------------------------------

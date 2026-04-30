@@ -6,11 +6,22 @@ import {
   getBezierPath,
   type EdgeProps,
 } from "@xyflow/react"
-import { memo } from "react"
+import {
+  memo,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent,
+} from "react"
 
 import { cn } from "@/lib/utils"
 
 import type { SystemEdgeData } from "./types"
+
+type SystemEdgeRuntimeData = SystemEdgeData & {
+  onSelectEdge?: (id: string) => void
+  _highlighted?: boolean
+  _selectionActive?: boolean
+}
 
 /**
  * The system-design edge.
@@ -36,7 +47,7 @@ function SystemEdgeBase({
   data,
   style,
   markerEnd,
-}: EdgeProps & { data?: SystemEdgeData }) {
+}: EdgeProps & { data?: SystemEdgeRuntimeData }) {
   const routePoints = data?._routePoints ?? []
   const routeLabel = data?._routeLabel
   const [bezierPath, bezierLabelX, bezierLabelY] = getBezierPath({
@@ -63,6 +74,32 @@ function SystemEdgeBase({
   const endpoint = data?.endpoint
   const hasMeta = Boolean(label || method || endpoint)
   const labelOffset = data?._labelOffset ?? { x: 0, y: 0 }
+  const highlighted = selected || data?._highlighted === true
+  const selectionActive = data?._selectionActive === true
+  const strokeColor = highlighted
+    ? "var(--foreground)"
+    : "var(--muted-foreground)"
+  const strokeWidth = selected ? 3.4 : highlighted ? 2.8 : 1.5
+  const opacity = highlighted ? 1 : selectionActive ? 0.32 : 0.65
+  // Edges connected to selected/parented nodes can be elevated above 1000 by
+  // React Flow, so selected-node labels need to clear that stack explicitly.
+  const labelZIndex = highlighted ? 2000 : 10
+  const labelOpacity = selectionActive && !highlighted ? 0.38 : 1
+
+  const selectEdge = () => data?.onSelectEdge?.(id)
+  const stopPointerPropagation = (event: PointerEvent<HTMLDivElement>) => {
+    event.stopPropagation()
+  }
+  const handleLabelClick = (event: MouseEvent<HTMLDivElement>) => {
+    event.stopPropagation()
+    selectEdge()
+  }
+  const handleLabelKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter" && event.key !== " ") return
+    event.preventDefault()
+    event.stopPropagation()
+    selectEdge()
+  }
 
   return (
     <>
@@ -70,27 +107,38 @@ function SystemEdgeBase({
         id={id}
         path={edgePath}
         style={{
-          stroke: "var(--muted-foreground)",
-          strokeWidth: selected ? 2 : 1.5,
-          opacity: selected ? 1 : 0.7,
           ...style,
+          stroke: strokeColor,
+          strokeWidth,
+          opacity,
         }}
         markerEnd={markerEnd}
       />
       <EdgeLabelRenderer>
         <div
-          className="nodrag nopan absolute z-10"
+          role="button"
+          tabIndex={0}
+          aria-label="Select edge"
+          className={cn(
+            "nodrag nopan absolute z-10 cursor-pointer outline-none",
+            "focus-visible:ring-2 focus-visible:ring-ring/40"
+          )}
           style={{
             transform: `translate(-50%, -50%) translate(${labelX + labelOffset.x}px, ${labelY + labelOffset.y}px)`,
-            pointerEvents: "none",
+            pointerEvents: "all",
+            zIndex: labelZIndex,
+            opacity: labelOpacity,
           }}
+          onPointerDown={stopPointerPropagation}
+          onClick={handleLabelClick}
+          onKeyDown={handleLabelKeyDown}
         >
           {hasMeta ? (
             <div
               className={cn(
                 "flex max-w-[16rem] items-center gap-1 rounded-full border bg-background px-2 py-0.5 text-[10px] font-medium shadow-md ring-2 ring-background transition-colors",
-                selected
-                  ? "border-foreground/40 text-foreground"
+                highlighted
+                  ? "border-foreground/50 text-foreground"
                   : "border-border text-foreground/80 hover:border-foreground/30"
               )}
               title={endpoint || label || method}
@@ -116,7 +164,7 @@ function SystemEdgeBase({
             <div
               className={cn(
                 "rounded-full border border-dashed border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground shadow-sm ring-2 ring-background transition-opacity",
-                selected ? "opacity-100" : "opacity-0 hover:opacity-100"
+                highlighted ? "opacity-100" : "opacity-0 hover:opacity-100"
               )}
             >
               edit
